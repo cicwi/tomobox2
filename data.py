@@ -21,6 +21,179 @@ from misc import *
 #           image_array class
 # **************************************************************
 
+class data_blocks_ssd(data_blocks):
+    """
+    This class doesn't keep data in RAM memory. It has a swap storage on SSD disk 
+    and keeps only one block of data in the RAM buffer.
+    """
+    
+    # Remeber the shape of the total data on disk:
+    _my_shape = []
+    
+    # Additional buffer for the slice image:
+    _buffer_slice = []
+    _buffer_slice_key = None
+    _buffer_updated = False
+    
+    # SSD swap:
+    _swap_path = ''
+    _swap_name = 'swap'
+    
+    def __init__(self, array = [], block_size = 4, swap_path = ''):
+        
+        # Init parent:
+        data_blocks.__init__(array, block_size)
+        
+        # Initialize sawp path:
+        self._swap_path = swap_path
+        
+    def _read_swap(self, key):
+        
+        file = os.path.join(self._swap_path, _swap_name + '_%05u' % key)
+        
+        # Read image:
+        return io._read_image(file)
+        
+    def _write_swap(self, key, image):
+        
+        file = os.path.join(self._swap_path, _swap_name + '_%05u' % key)
+        
+        # Write image:
+        io._write_image(file, image)
+    
+    def _set_slice_buffer(self, key, image):
+        
+        if key == self._buffer_slice_key:
+            self._buffer_updated = True
+        else:
+            self._update_buffer_slice_key(key)
+        
+        self._buffer_slice = image
+            
+    def _get_slice_buffer(self, key):
+        
+        # Do we have a buffer of that slice?
+        if key == self._buffer_slice_key:
+            return self._buffer_slice
+        
+        # Need to upload a new buffer:
+        self._update_buffer_slice_key(key)
+        return self._read_swap(key)
+     
+    def _update_buffer_slice_key(self, key):
+        """
+        If buffer was modified - update file on disk.
+        """
+        if self._buffer_updated:
+            self.write_swap()
+            
+        self._buffer_slice_key = key    
+        
+    def get_slice(self, key):
+        """
+        Get one slice.
+        """        
+        step = self.sampling[self.dim]
+        img = self._get_slice_buffer(key*step)
+        
+        # Are we in the right block?
+        start, stop = self._get_index(self._index)
+        
+        if (key >= start) | (key < stop):
+            # Use existing block:
+            if self.dim == 0:        
+                return self._buffer[key*step, :, :] 
+    
+            elif self.dim == 1:
+                 return self._buffer[:, key*step, :] 
+    
+            else:
+                return self._buffer[:, :, key*step] 
+        
+        # Upload data from disk:
+        return self.read_swap(key*step)
+            
+    def set_slice(self, key, image):
+        """
+        Set one slice.
+        """
+        # Do we have a buffer of that slice?
+        
+        # Are we in the right block?
+        start, stop = self._get_index(self._index)
+        step = self.sampling[self.dim]
+        
+        if (key >= start) | (key < stop):
+            # Use existing block:
+            if self.dim == 0:        
+                self._buffer[key*step, :, :] = image
+            elif self.dim == 1:
+                 self._buffer[:, key*step, :] = image
+            else:
+                self._buffer[:, :, key*step] = image
+                            
+        # In any case save to disk:
+        self.write_swap(key*step)            
+
+    def __getitem__(self, key):
+        """
+        Get block of data.
+        """
+        start, stop = self._get_index(key)   
+        step = self.sampling[self.dim]
+        
+        progress_bar(key / self.block_number)        
+
+        if self.dim == 0:        
+            return self._buffer[start:stop:step, :, :] 
+
+        elif self.dim == 1:
+             return self._buffer[:, start:stop:step, :] 
+
+        else:
+            return self._buffer[:, :, start:stop:step] 
+        
+    def __setitem__(self, key, data):    
+        """
+        Set block of data.
+        """
+        start, stop = self._get_index(key)   
+        step = self.sampling[self.dim]
+        
+        if self.dim == 0:        
+            self._buffer[start:stop:step, :, :] = data
+
+        elif self.dim == 1:
+             self._buffer[:, start:stop:step, :] = data
+
+        else:
+            self._buffer[:, :, start:stop:step] = data
+
+    @property    
+    def total(self):
+        """
+        Get all data.
+        """
+        dx = self.sampling
+        return self._buffer[::dx[0],::dx[1],::dx[2]]
+        
+    @total.setter
+    def total(self, array):
+        """
+        Set all data.
+        """
+        dx = self.sampling
+        
+        self._buffer[::dx[0],::dx[1],::dx[2]] = numpy.array(array)   
+        
+        
+    @property
+    def shape(self):
+        """
+        Dimensions of the array.
+        """
+        return numpy.array(self._buffer.shape) // self.sampling
+
 class data_blocks(object):
     """
     This will be a generic data array stored in RAM. Other types of arrays
@@ -29,19 +202,24 @@ class data_blocks(object):
     User can get a block of data from the data_blocks by iterating it. 
     Or use 'total' property to set/get all data at once.
     """
-
-    # Maximum block size in GB. 
-    block_size = 1
-    
-    # Da data:
-    _array = []
+    # Da data, in RAM version of data_blocks, _buffer contains the entire data:
+    _buffer = []
 
     # Block counter:
     _index = 0
-    _block_step = 1
-    _dim = 0
+   
+    # Maximum block size in GB. 
+    block_size = 1
+    
+    # Dimension of access (dim = 1 for ASTRA projections, dim = 0 for volume slices) 
+    dim = 0
+    
+    # Sampling for get_data methods:
+    sampling = [1, 1, 1]    
 
     def __init__(self, array = [], block_size = 4):
+        
+        self.sampling = numpy.array([1, 1, 1])
         
         self.block_size = block_size
         self.total = numpy.array(array, dtype = 'float32')
@@ -50,7 +228,7 @@ class data_blocks(object):
         
     def __del__(self): 
         
-        del self._array
+        del self._buffer
         gc.collect()
         
         print('Bye bye data_blocks!')
@@ -62,7 +240,7 @@ class data_blocks(object):
         
         # Reset the counter:
         self._index = 0
-        self._dim = 0
+        self.dim = 0
         
         print('Accesing block data (%uGB block size)...' % self.block_size)  
         
@@ -89,89 +267,85 @@ class data_blocks(object):
         """
         Make a block of zeroes.
         """
-        
-        shp = self._array.shape
-        shp[self._dim] /= self.block_number
-        
-        if val != 0:
-            return numpy.zeros(shp)    
+        shp = self.block_shape   
+           
+        if val == 0:
+            return numpy.zeros(shp, dtype = numpy.float32)    
         else:
-            return numpy.zeros(shp) + val    
+            return numpy.ones(shp, dtype = numpy.float32) * val    
         
     def empty_slice(self, val = 0):
         """
         Make a slice of zeroes.
         """
+        shp = self.slice_shape
         
-        shp = self._array.shape
-        
-        index = numpy.arange(2)
-        index = index[index != self._dim]
-        
-        if val != 0:
-            return numpy.zeros(shp[index])
+        if val == 0:
+            return numpy.zeros(shp[index], dtype = numpy.float32)
         else:
-            return numpy.zeros(shp[index]) + val
+            return numpy.ones(shp[index], dtype = numpy.float32) * val
 
     def get_slice(self, key):
         """
         Get one slice.
         """        
-        if self._dim == 0:        
-            return self._array[key, :, :] 
+        step = self.sampling[self.dim]
+        
+        if self.dim == 0:        
+            return self._buffer[key*step, :, :] 
 
-        elif self._dim == 1:
-             return self._array[:, key, :] 
+        elif self.dim == 1:
+             return self._buffer[:, key*step, :] 
 
         else:
-            return self._array[:, :, key] 
+            return self._buffer[:, :, key*step] 
 
     def set_slice(self, key, image):
         """
         Set one slice.
         """
+        step = self.sampling[self.dim]
         
-        if self._dim == 0:        
-            self._array[key, :, :] = image
-        elif self._dim == 1:
-             self._array[:, key, :] = image
+        if self.dim == 0:        
+            self._buffer[key*step, :, :] = image
+        elif self.dim == 1:
+             self._buffer[:, key*step, :] = image
         else:
-            self._array[:, :, key] = image
+            self._buffer[:, :, key*step] = image
 
     def __getitem__(self, key):
         """
         Get block of data.
         """
-        
-        #print("\r Block iterator access {:2.1%}".format((self._index) / self.block_number), end=" ")    
-        
-        progress_bar(key / self.block_number)
-        
         start, stop = self._get_index(key)   
+        step = self.sampling[self.dim]
+        
+        progress_bar(key / self.block_number)        
 
-        if self._dim == 0:        
-            return self._array[start:stop, :, :] 
+        if self.dim == 0:        
+            return self._buffer[start:stop:step, :, :] 
 
-        elif self._dim == 1:
-             return self._array[:, start:stop, :] 
+        elif self.dim == 1:
+             return self._buffer[:, start:stop:step, :] 
 
         else:
-            return self._array[:, :, start:stop] 
+            return self._buffer[:, :, start:stop:step] 
         
     def __setitem__(self, key, data):    
         """
         Set block of data.
         """
         start, stop = self._get_index(key)   
+        step = self.sampling[self.dim]
+        
+        if self.dim == 0:        
+            self._buffer[start:stop:step, :, :] = data
 
-        if self._dim == 0:        
-            self._array[start:stop, :, :] = data
-
-        elif self._dim == 1:
-             self._array[:, start:stop, :] = data
+        elif self.dim == 1:
+             self._buffer[:, start:stop:step, :] = data
 
         else:
-            self._array[:, :, start:stop] = data
+            self._buffer[:, :, start:stop:step] = data
 
     def __len__(self):
         """
@@ -179,12 +353,10 @@ class data_blocks(object):
         """
         return self.block_number
 
-    '''
     def __next__(self):
         """
         Retrun next block of data.
         """
-        
         try: 
             block = self[self._index]
             self._index += 1
@@ -195,20 +367,18 @@ class data_blocks(object):
         print("\r Block iterator progress {:2.1%}".format((self._index) / self.block_number), end=" ")    
             
         return block 
-    '''
     
-    def block_index(self, key = []):
+    def block_xyz(self, key = None):
         """
         Return current block indexes. Can be used to create a meshgrid for instance.
         """
-
         # Current block:
-        if key is []: key = self._index
-        block = self[key]
-
-        x = numpy.arange(0, block.shape[0])
-        y = numpy.arange(0, block.shape[1])
-        z = numpy.arange(0, block.shape[2])
+        if key is None: key = self._index      
+        shp = self.block_shape
+        
+        x = numpy.arange(0, shp[0])
+        y = numpy.arange(0, shp[1])
+        z = numpy.arange(0, shp[2])
 
         start, stop = self._get_index(key)   
         
@@ -223,11 +393,20 @@ class data_blocks(object):
    
     @property    
     def total(self):
-        return self._array
+        """
+        Get all data.
+        """
+        dx = self.sampling
+        return self._buffer[::dx[0],::dx[1],::dx[2]]
         
     @total.setter
     def total(self, array):
-        self._array = array   
+        """
+        Set all data.
+        """
+        dx = self.sampling
+        
+        self._buffer[::dx[0],::dx[1],::dx[2]] = numpy.array(array)   
         
         
     @property
@@ -235,35 +414,57 @@ class data_blocks(object):
         """
         Dimensions of the array.
         """
-        return self._array.shape
+        return numpy.array(self._buffer.shape) // self.sampling
         
+    def slice_shape(self):
+        """
+        Dimensions of a single slice:
+        """
+        
+        shp = self.shape
+        
+        index = numpy.arange(3)
+        index = index[index != self.dim]
+        
+        return shp[index]
+        
+    def block_shape():
+        """
+        Shape of the block:
+        """
+        shp = self.shape
+        
+        shp[self.dim] /= self.block_number
+           
+        return shp
+           
     @property
     def length(self):
         """
         Length of the array along the blocking direction.
         """
-        return self.shape[self._dim]  
+        return self.shape[self.dim]  
 
     @property
     def block_number(self):
         """
         Number of blocks.
         """
-        return int(numpy.ceil(self.sizeGB / self.block_size))
+        return int(1 + self.sizeGB / self.block_size / self.sampling.prod())
         
     @property
     def size(self):
         """
         Number of elements of the array.
         """
-        return self._array.size    
+        return self._buffer.size // self.sampling.prod()   
         
     @property
     def dtype(self):
         """
         Data type of the array.
         """
-        return self._array.dtype
+        return self._buffer.dtype
         
     @property
     def sizeGB(self):
@@ -275,7 +476,7 @@ class data_blocks(object):
 # **************************************************************
 #           IO class
 # **************************************************************
-class io(object):
+class io(subclass):
     """
     Reads / writes stacks of images.
     """
@@ -352,7 +553,7 @@ class io(object):
                 a = io._read_image(filename)
             except:
                 print('WARNING! FILE IS CORRUPTED. CREATING A BLANCK IMAGE.')
-                a = numpy.zeros(data.shape[1:])
+                a = numpy.zeros(data.shape[1:], dtype = numpy.float32)
                 
             if a.ndim > 2:
               a = a.mean(2)
@@ -528,18 +729,29 @@ class projections(object):
     """
     Container for the projection data.
     """
-
-    _data = data_blocks()
+    # Main container for the data:
+    data = data_blocks()
+    
+    # Some data handling routines:
+    io = None
+    process = None
+    display = None
+    analyse = None
+    
     _ref  = []
     _dark = []
     
     def __init__(self):
-        pass
+        self.io = io(self)
+        self.process = process(self)
+        self.display = display(self)
+        self.analyse = analyse(self)
+    
     
     def __del__(self):
         pass
     
-    def get_vector ->>> to data block
+    #def get_vector ->>> to data block
     
     def get_ref(self, proj_num = 0):
         '''

@@ -37,7 +37,7 @@ class tomobox(object):
     data = []
     volume = []
 
-    reconstruct = reconstruct()
+    reconstruct = []#reconstruct()
     
     def __init__(self):
         
