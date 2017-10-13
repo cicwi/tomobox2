@@ -18,17 +18,19 @@ def progress_bar(progress):
     Plot progress in pseudographics:
     """
     
-    txt = '\r |'
+    txt = '\r\u2595'
     
-    for ii in range(20):
-        if ii / 20 <= progress:
+    bar_length = 40
+    
+    for ii in range(bar_length):
+        if (ii / bar_length) <= progress:
             txt = txt + '\u2588'
         else:
-            txt = txt + ' '
+            txt = txt + '\u2592'
             
-    txt = txt + '|'        
+    txt = txt + '\u258F'        
     
     print(txt, end = " ") 
-    
-    if progress == 1:
-        print('\r')
+        
+    if progress >= 1:
+        print(' ')

@@ -12,15 +12,124 @@ This module contains the Great Mighty Tomobox.
 # **************************************************************
 
 # Numerical modules: 
-import astra
+#import astra
 import numpy
+import warnings
 
 # Own modules:
-from data import data        
-from reconstruction import reconstruct    
+from analysis import process
+from analysis import display
+from analysis import analyse
+
+from data import io        
+from data import data_blocks
+from data import data_blocks_ssd
+from meta import meta
+
+#from reconstruction import reconstruct    
 
 # System modules:
-import gc
+#import gc
+
+# **************************************************************
+#           PROJECTIONS class
+# **************************************************************
+
+class projections(object):
+    """
+    Container for the projection data.
+    """
+    # Main container for the data:
+    data = None 
+    
+    # Corresponding meta data (geometry, history):
+    meta = None
+    
+    # Some data handling routines:
+    io = None
+    process = None
+    display = None
+    analyse = None
+    
+    _ref  = []
+    _dark = []
+    
+    def __init__(self):
+        
+        self.data = data_blocks(block_sizeGB = 1)
+        self.meta = meta(self)
+        
+        self.io = io(self)
+        self.process = process(self)
+        self.display = display(self)
+        self.analyse = analyse(self)
+        
+    def switch_to_ssd(self, swap_path = '/export/scratch3/kostenko/Fast_Data/swap'):
+        """
+        Switches data to an SSD based array.
+        """
+        self.data = data_blocks_ssd(block_sizeGB = 1, dtype='float32', swap_path = swap_path)
+    
+    def __del__(self):
+        pass
+    
+    def message(self, msg):
+        '''
+        Send a message to IPython console.
+        '''
+        print(msg)
+
+    def error(self, msg):
+        '''
+        Throw an error:
+        '''
+        self.meta.history.add_record('error', msg)
+        raise ValueError(msg)
+
+    def warning(self, msg):
+        '''
+        Throw a warning. In their face!
+        '''
+        self.meta.history.add_record('warning', msg)
+        warnings.warn(msg)
+    
+    def get_ref(self, proj_num = 0):
+        '''
+        Returns a reference image. Interpolated if several reference images are available.
+        '''
+        
+        # Return reference image for the current projection:
+        if self._ref.ndim > 2:
+          
+            if self.data is None:
+                self._parent.warning('No raw data available. We don`t know how many projections there are in order to interpolate the reference image properly. Read raw data first.')
+                dsz = self._ref.shape[1]
+
+            else:
+                dsz = self.data.shape[1]
+                
+            # Several flat field images are available:
+            ref = self._ref
+          
+            sz = ref.shape
+            
+            proj_index = numpy.linspace(0, sz[1]-1, dsz)
+            
+            a = proj_index[proj_num]
+            fract = a - numpy.floor(a)            
+            a = int(numpy.floor(a))            
+            
+            if a < (dsz-1):
+                b = int(numpy.ceil(proj_index[proj_num]))
+            else:
+                b = a
+                
+            return self._ref[:, a, :] * (1 - fract) + self._ref[:, b, :] * fract
+          
+        else:
+            
+           # One flat field image is available:
+           return self._ref  
 
 # **************************************************************
 #           SINOGRAM class
@@ -47,7 +156,7 @@ class tomobox(object):
         
     def load_data(self, path, add_new = False):
         
-        data = 
+        #data = 
         self.data.append(data)
     
     

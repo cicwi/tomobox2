@@ -7,23 +7,19 @@ Created: Oct 2017
 This module contains routines related to the meta-data handling for the tomobox.
 """
 
+# External modules
+import numpy
+import time
+import astra
+import transforms3d
+
+# Tomobox modules
 import reports               # Makes compact reports for different classes.
+import misc
 
-class meta(subclass):
-    '''
-    This object contains various properties of the imaging system and the history of pre-processing.
-    '''
-    geometry = None
-    history = history()
-
-    def __init__(self, parent):
-        subclass.__init__(self, parent)
-        
-        self.geometry = geometry(self._parent)
-        
-    physics = {'voltage': 0, 'current':0, 'exposure': 0}
-    lyrics = {}
-    
+# **************************************************************
+#           HISTORY class
+# **************************************************************   
 class history():
     '''
     Container for the history reconrds of operations applied to the data.
@@ -49,7 +45,7 @@ class history():
         self._records.append([operation, properties, timestamp, numpy.shape(self._records)[0] ])
     
     @property
-    def keys(self):
+    def list_operations(self):
         '''
         Return the list of operations.
         '''
@@ -84,7 +80,7 @@ class history():
 # **************************************************************
 #           Geometry class
 # **************************************************************
-class geometry(subclass):
+class geometry(misc.subclass):
     '''
     Geometry class describes the simplest circular geometry. 
     src2obj, det2obj, det_pixel and thetas fully describe it. 
@@ -97,17 +93,17 @@ class geometry(subclass):
     '''    
     
     # Private properties:
-    _src2obj
-    _det2obj
-    _det_pixel
-    _thetas
+    _src2obj = 0
+    _det2obj = 0
+    _det_pixel = []
+    _thetas = []
 
     # Methods:
     def __init__(self, parent, src2obj = 1, det2obj = 1, det_pixel = [1, 1], theta_range = [0, numpy.pi*2], theta_n = 2):
         '''
         Make sure that all relevant properties are set to some value.
         '''
-        subclass.__init__(self, parent)
+        misc.subclass.__init__(self, parent)
         
         self._src2obj = src2obj
         self._det2obj = det2obj
@@ -172,29 +168,32 @@ class geometry(subclass):
         
     @property
     def thetas(self):
-        data = self._parent.data.
-        dt = data.sampling[data.dim]
         
         # Check consistency with the data size:
         if not self._parent.data is None:
-            if self._parent.data.length != numpy.size(self._thetas[::dt]):
+            if self._parent.data.length != numpy.size(self._thetas):
                 self._parent.message('Assuming uniform angular sampling. Initializing thetas using the data shape.')
             
                 self.init_thetas(theta_n = self._parent.data.length)
             
-        return numpy.array(self._thetas[::dt])
+        return numpy.array(self._thetas)
         
     @thetas.setter
     def thetas(self, thetas):
-        # Doesn't take into account the sampling!
         self._thetas = numpy.array(thetas)
     
     @property
     def theta_n(self):
+        """
+        Number of projections.
+        """
         return self.thetas.size    
         
     @property
     def theta_range(self):
+        """
+        First to last angle.
+        """
         if self.thetas.size > 0:
             return (self.thetas[0], self.thetas[-1])
         else:
@@ -221,9 +220,21 @@ class geometry(subclass):
         else:    
             self._thetas = numpy.linspace(theta_range[0], theta_range[1], theta_n)    
     
-    # TODO:
-    def get_vector(self):
-        pass
+    def get_astra_vector(self):
+        """
+        Generate the vector that describes positions of the source and detector. + Returns the corrsponding projection geometry.
+        """
+        
+        sz = self._parent.data.slice_shape
+        det_count_x = sz[1]
+        det_count_z = sz[0]
+
+        # Inintialize ASTRA projection geometry to import vector from it
+        proj_geom = astra.create_proj_geom('cone', self.det_pixel[1], self.det_pixel[0], det_count_z, det_count_x, self.thetas, self.src2obj, self.det2obj)
+        proj_geom = astra.functions.geom_2vec(proj_geom)
+        
+        return proj_geom['Vectors'], proj_geom
+
     
 class flex_geometry(geometry):
     """
@@ -233,7 +244,9 @@ class flex_geometry(geometry):
     All properties are given in "mm" and describe changes relatively to a default circular orbit.
     """
 
-    # Modifiers describe 
+    # Deviations from the standard circular geometry:
+    # unit: mm
+    # orientation: [horizontal, vertical, magnification]
     det_trans = [0, 0, 0]
     det_rot = 0
     
@@ -241,85 +254,243 @@ class flex_geometry(geometry):
     
     axs_trans = [0, 0, 0]
     
-    vol_trans = [0, 0, 0]
-    vol_rot = [0, 0, 0]
+    vol_trans = [0, 0, 0]     # not per projection
+    vol_rot = [0, 0, 0]       # not per projecrion
     
-    theta_offset = 0
+    theta_offset = []
     
     '''
     Modifiers (dictionary of geometry modifiers that can be applied globaly or per projection)
     VRT, HRZ and MAG are vertical, horizontal and prependicular directions relative to the original detector orientation    
     '''
-    @staticmethod
-    def _unit2mm(unit):
+    def _unit2mm(self, unit):
         """
         Convert some units into mm.
         """
         units = {'pixel': [self.det_pixel[1], self.det_pixel[1], self.det_pixel[0]], 
-        'mm': [1, 1, 1], 'um': [1e-3, 1e-3, 1e-3], :'micron': [1e-3, 1e-3, 1e-3]}
+            'mm': [1, 1, 1], 'um': [1e-3, 1e-3, 1e-3], 'micron': [1e-3, 1e-3, 1e-3]}
         
         if unit in units:
-            return = numpy.array(units[unit])
+            return numpy.array(units[unit])
         else:
             raise ValueError('Unit not recognized!')
                 
-    def shift_volume(self, shift, unit = 'pixel', additive = True):
+    def set_volume_shift(self, shift, unit = 'pixel', additive = True):
         """
         Translate reconstruction volume relative to the rotation center.
         """
         if additive:
-            self.vol_trans += shift * self.unit2mm(unit)
+            self.vol_trans += shift * self._unit2mm(unit)
         else:
-            self.vol_trans = shift * self.unit2mm(unit) 
+            self.vol_trans = shift * self._unit2mm(unit) 
         
-    def thermal_shift(self, thermal_shifts, unit = 'pixel', additive = False):
+    def set_thermal_shift(self, thermal_shifts, unit = 'pixel', additive = False):
         '''
         Shift the source according to the thermal shift data. Thermal shift is in pixels
         '''
+        unt = self._unit2mm(unit)
+        
         if additive:
-            src_trans += thermal_shifts[:,0]/(self.magnification - 1) * self.det_pixel[1]
-            self.modifiers['src_vrt'] += thermal_shifts[:,1]/(self.magnification - 1) * self.det_pixel[0]
+            self.src_trans[0] += thermal_shifts[:,0]/(self.magnification - 1) * unt[0]
+            self.src_trans[1] += thermal_shifts[:,1]/(self.magnification - 1) * unt[1]
         else:
-            self.modifiers['src_hrz'] = thermal_shifts[:,0]/(self.magnification - 1) * self.det_pixel[1]
-            self.modifiers['src_vrt'] = thermal_shifts[:,1]/(self.magnification - 1) * self.det_pixel[0]
+            self.src_trans[0] = thermal_shifts[:,0]/(self.magnification - 1) * unt[0]
+            self.src_trans[1] = thermal_shifts[:,1]/(self.magnification - 1) * unt[1]
 
-    def set_rotation_axis(self, shift, additive = False):
+    def set_rotation_axis(self, shift, unit = 'pixel', additive = False):
         '''
         shift is in pixels.
         '''
+        
+        unt = self._unit2mm(unit)
+        
         if additive:
-            self.modifiers['axs_hrz'] += shift / self.magnification * self.det_pixel[1]
+            self.axs_trans[0] += shift / self.magnification * unt[0]
         else:
-            self.modifiers['axs_hrz'] = shift / self.magnification * self.det_pixel[1]
+            self.axs_trans[0] = shift / self.magnification * unt[0]
 
-    def get_rotation_axis(self):
+    def get_rotation_axis(self, unit = 'pixel'):
         '''
         Retrurn the rotation axis shift in pixels.
         '''
-        return self.modifiers['axs_hrz'] * self.magnification / self.det_pixel[1]
+        
+        unt = self._unit2mm(unit)
+        
+        return self.axs_trans[0] * self.magnification / unt[0]
 
-    def optical_axis_shift(self, shift, additive = False):
+    def set_optical_axis(self, shift, unit = 'pixel', additive = False):
+        '''
+        Set vertical projected position of the source relative to the center of the detector.
+        '''
+        
+        unt = self._unit2mm(unit)
+        
         if additive:
-            self.modifiers['det_vrt'] += shift * self.det_pixel[0]
+            self.det_trans[1] += shift * unt[0]
         else:
-            self.modifiers['det_vrt'] = shift * self.det_pixel[0]
+            self.det_trans[1] = shift * unt[0]
 
         # Center the volume around the new axis:
-        self.translate_volume([0, 0, shift])
+        self.shift_volume([0, shift, 0])
                 
-    def origin_shift(self):
+    def get_volume_offset(self, unit = 'pixel'):
         '''
         Compute the shift of the volume central point [x, y, z] due to offsets in the optical and rotation axes.
-        '''    
-        hrz = 3 * (abs(self.modifiers['det_hrz'] * self.src2obj + self.modifiers['src_hrz'] * self.det2obj) / self.src2det - self.modifiers['axs_hrz'])  
-        #vrt = (self.modifiers['det_vrt'] * self.src2obj + self.modifiers['src_vrt'] * self.det2obj) / self.src2det
-        vrt = abs(self.modifiers['det_vrt'] * self.src2obj + self.modifiers['src_vrt'] * self.det2obj) / self.src2det - self.modifiers['vol_z_tra']
+        '''
+        unt = self._unit2mm(unit)
         
-        # Take into account global shifts:
-        #hrz = numpy.max([numpy.abs(hrz + self.modifiers['vol_x_tra']), hrz + numpy.abs(self.modifiers['vol_y_tra'])])
-        #vrt += self.modifiers['vol_z_tra']
+        # In case traslations are provided per projection, find averages
+        det_hrz = numpy.mean(self.det_trans[0])
+        src_hrz = numpy.mean(self.det_trans[0])
+        det_vrt = numpy.mean(self.det_trans[1])
+        src_vrt = numpy.mean(self.det_trans[1])
+        axs_hrz = numpy.mean(self.axs_trans[0])
         
-        return [hrz / self.det_pixel[1], vrt / self.det_pixel[0]]
+        hrz = 3 * (abs(det_hrz * self.src2obj + src_hrz * self.det2obj) / self.src2det - axs_hrz) / unt[0]
+        vrt = abs(det_vrt * self.src2obj + src_vrt * self.det2obj) / self.src2det - self.vol_trans[1] / unt[1]
+        
+        return [hrz, vrt]
     
+    @staticmethod
+    def _per_projection(vector, index):
+        """
+        If vector is 1D - return vector, if it is given for every theta - return one that has the index = index.
+        """
+        if vector.ndim < 2:
+            return vector
+        else:
+            return vector[:, index]
+      
+    def get_detector_vector(self):
+        """
+        Return coordinates of the detector boundary for each projection:
+        [left, right], [top, bottom]
+        """
+        vectors = self.get_astra_vector()
+        
+        det_centre = vectors[:, 3:6].copy() 
+
+        det_axis_vrt = vectors[:, 9:12] * geometry.det_size[0] / 2 / self.det_pixel[0] 
+        det_axis_hrz = vectors[:, 6:9] * geometry.det_size[1] / 2 / self.det_pixel[1] 
+       
+        det_top = det_centre + det_axis_vrt
+        det_bottom = det_centre - det_axis_vrt
+
+        det_left = det_centre + det_axis_hrz
+        det_right = det_centre - det_axis_hrz
+
+        return [det_left, det_right], [det_top, det_bottom]
+
+    def get_source_vector(self):
+        """
+        Return coordinates of the source for each projection.
+        """
+        vectors = self.get_astra_vector()
+        
+        src_vect = vectors[:, 0:3].copy() 
+
+        return src_vect
+        
+    def get_volume_parameters(self):
+        """
+        Compute volume size correcponding to the currecnt geometry.
+        """
+        
+        # Source positions:
+        src = self.get_source_vector()
+        
+        # Left\right and top/bottom of the detector:
+        lr, tb = self.get_detector_vector()
+        
+        print(src)
+        print(lr[0])      
+  
+    def get_astra_vector(self):
+        """
+        Generate the vector that describes positions of the source and detector.
+        """
+        # Call parrent method
+        vectors, proj_geom = geometry.get_astra_vector(self)
+        
+        
+        for ii in range(0, vectors.shape[0]):
+            
+            # Define vectors:
+            src_vect = vectors[ii, 0:3]    
+            det_vect = vectors[ii, 3:6]    
+            det_axis_hrz = vectors[ii, 6:9]          
+            det_axis_vrt = vectors[ii, 9:12]
+
+            #Precalculate vector perpendicular to the detector plane:
+            det_normal = numpy.cross(det_axis_hrz, det_axis_vrt)
+            det_normal = det_normal / numpy.sqrt(numpy.dot(det_normal, det_normal))
+            
+            # Translations relative to the detecotor plane:
+            px = self.det_pixel
+                
+            #Detector shift (V):
+            det_vect += self._per_projection(self.det_trans[1], ii) * det_axis_vrt / px[0]
     
+            #Detector shift (H):
+            det_vect += self._per_projection(self.det_trans[0], ii) * det_axis_hrz / px[1]
     
+            #Detector shift (M):
+            det_vect += self._per_projection(self.det_trans[2], ii) * det_normal /  px[1]
+    
+            #Source shift (V):
+            src_vect += self._per_projection(self.src_trans[1], ii) * det_axis_vrt / px[0]  
+    
+            #Source shift (H):
+            src_vect += self._per_projection(self.src_trans[0], ii) * det_axis_hrz / px[1]
+
+            #Source shift (M):
+            src_vect += self._per_projection(self.src_trans[2], ii) * det_normal / px[1]
+
+            # Rotation axis shift:
+            det_vect -= self._per_projection(self.axs_trans[0], ii) * det_axis_hrz  / px[1]
+            src_vect -= self._per_projection(self.axs_trans[0], ii) * det_axis_hrz  / px[1]
+    
+            # Rotation relative to the detector plane:
+            # Compute rotation matrix
+        
+            T = transforms3d.axangles.axangle2mat(det_normal, self.det_rot)
+            
+            det_axis_hrz[:] = numpy.dot(T.T, det_axis_hrz)
+            det_axis_vrt[:] = numpy.dot(T, det_axis_vrt)
+        
+            # Global transformation:
+            # Rotation matrix based on Euler angles:
+            R = transforms3d.euler.euler2mat(self.vol_rot, 'szxy')
+    
+            # Apply transformation:
+            det_axis_hrz[:] = numpy.dot(R, det_axis_hrz)
+            det_axis_vrt[:] = numpy.dot(R, det_axis_vrt)
+            src_vect[:] = numpy.dot(R, src_vect)
+            det_vect[:] = numpy.dot(R, det_vect)            
+            
+            # Add translation:
+            vect_norm = det_axis_vrt[2]
+            
+            T = numpy.array([self.vol_trans[0] * vect_norm / px[1], self.vol_trans[2] * vect_norm / px[1], self.vol_trans[1] * vect_norm / px[0]])    
+            src_vect[:] -= T            
+            det_vect[:] -= T
+
+        return vectors, proj_geom
+
+# **************************************************************
+#           META class
+# **************************************************************        
+class meta(misc.subclass):
+    '''
+    This object contains various properties of the imaging system and the history of pre-processing.
+    '''
+    geometry = None
+    history = history()
+
+    def __init__(self, parent):
+        misc.subclass.__init__(self, parent)
+        
+        self.geometry = flex_geometry(parent)
+        
+    physics = {'voltage': 0, 'current':0, 'exposure': 0}
+    lyrics = {}

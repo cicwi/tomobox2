@@ -8,19 +8,18 @@ This module contains routines related to the data analysis and processing for th
 """
 
 import numpy
-from scipy.ndimage import measurements
-import transforms3d
-from transforms3d import euler
-from skimage import morphology
+from scipy import ndimage           # Image processing, filters
+import gc
 
 import matplotlib.pyplot as plt
 
-from misc import *
-        
+# Tomobox modules
+import misc 
+import simulate        
 # **************************************************************
 #           ANALYSE class
 # **************************************************************        
-class analyse(subclass):
+class analyse(misc.subclass):
     '''
     This is an anlysis toolbox for the raw and reconstructed data
     '''
@@ -28,26 +27,43 @@ class analyse(subclass):
     def l2_norm(self):
         norm = 0
         
-        for block in self._parent._data:
+        for block in self._parent.data:
             norm += numpy.sum(block ** 2)
             
         return norm
-        
+       
     def sum(self, dim = None):      
-        block = self._parent._data[0]
         
-        vals = numpy.sum(block, dim)
+        # If no dimension provided sum everything:
+        if dim is None:
+            vals = 0
 
-        for block in self._parent._data:
-            vals += numpy.sum(block, dim)
+            for block in self._parent.data:
+                vals += numpy.sum(block)
             
-        return vals
-
+            return vals
+            
+        # if dim is the same as the main dimension 
+        if dim == self._parent.data._dim:
+            
+            img = self._parent.data.empty_slice()   
+            
+            for block in self._parent.data:
+                img += numpy.sum(block, dim)
+                
+            return img
+            
+        # if dim is not the same as the main dimension     
+        else:
+            print('Warning! Summing perpendicular to the main direction of the data array is not implemented for SSD arrays!')
+            
+            return numpy.sum(self._parent.data.total, dim)
+            
     def mean(self, dim = None):
         """
         Compute mean.
         """
-        return self.sum(dim) / self._parent._data.size
+        return self.sum(dim) / self._parent.data.size
 
     def min(self, dim = None):
         """
@@ -55,11 +71,11 @@ class analyse(subclass):
         """
         val = 10**10
         
-        block = self._parent._data[0]
+        block = self._parent.data[0]
 
         val = numpy.min(block, dim)
         
-        for block in self._parent._data[1:]:
+        for block in self._parent.data[1:]:
             val = numpy.min((val, numpy.min(block, dim)), 0)
             
         return val
@@ -70,11 +86,11 @@ class analyse(subclass):
         """
         val = -10**10
         
-        block = self._parent._data[0]
+        block = self._parent.data[0]
 
         val = numpy.max(block, dim)
         
-        for block in self._parent._data[1:]:
+        for block in self._parent.data[1:]:
             val = numpy.max((val, numpy.max(block, dim)), 0)
             
         return val
@@ -84,10 +100,10 @@ class analyse(subclass):
         Compute percentile.
         """
         val = 0
-        for block in self._parent._data
+        for block in self._parent.data:
             val += numpy.percentile(block, prcnt)
             
-        return val / len(self._parent._data)    
+        return val / len(self._parent.data)    
 
     def center_of_mass(self, dim = 1):
         '''
@@ -96,20 +112,19 @@ class analyse(subclass):
                 dim (int): dimension that is averaged before the center of mass is computed.
         '''
         
-        data = self._parent._data
-        sz = data.shape
+        data = self._parent.data
         
         # Indexes and masses:
         xx, yy, zz = 0, 0, 0
         m = 0
         
         for block in data:
-            x,y,z = data.block_index()
+            xyz = data.block_xyz()
             
             m2 = block ** 2
-            xx += numpy.sum(x * m2)
-            yy += numpy.sum(y * m2)
-            zz += numpy.sum(z * m2)
+            xx += numpy.sum(xyz[0] * m2)
+            yy += numpy.sum(xyz[1] * m2)
+            zz += numpy.sum(xyz[2] * m2)
             
             m += numpy.sum(m2)
             
@@ -123,12 +138,12 @@ class analyse(subclass):
         vals = numpy.zeros(nbin)
         
         if slice_num == []:
-            for block in self._parent._data:
+            for block in self._parent.data:
                 a, b = numpy.histogram(block, bins = nbin, range = [mi, ma])
                 vals += a
 
         else:
-            vals, b = numpy.histogram(self._parent._data.get_slice(slice_num), bins = nbin, range = [mi, ma])      
+            vals, b = numpy.histogram(self._parent.data.get_slice(slice_num), bins = nbin, range = [mi, ma])      
 
         # Set bin values to the middle of the bin:
         b = (b[0:-1] + b[1:]) / 2
@@ -146,13 +161,13 @@ class analyse(subclass):
 # **************************************************************
 #           DISPLAY class and subclasses
 # **************************************************************
-class display(subclass):
+class display(misc.subclass):
     """
     This is a collection of display tools for the raw and reconstructed data
     """
     
     def __init__(self, parent = []):
-        subclass.__init__(self, parent)
+        misc.subclass.__init__(self, parent)
         
         self._cmap = 'magma'
         self._dynamic_range = []
@@ -178,28 +193,28 @@ class display(subclass):
             plt.figure()
 
 
-    def slice(self, index = None, dim = 0, fig_num = []):
+    def slice(self, index = None, dim = 1, fig_num = []):
         '''
         Display a 2D slice of 3D volumel
         '''
         self._figure_maker_(fig_num)
 
         if index is None:
-            slice_num = self._parent.data.shape[index] // 2
+            index = self._parent.data.shape[dim] // 2
 
-        img = self._parent.get_slice(index)
+        img = self._parent.data.get_slice(index, dim)
 
-        if mirror: img = numpy.fliplr(img)
-        if upsidedown: img = numpy.flipud(img)
+        if self._mirror: img = numpy.fliplr(img)
+        if self._upsidedown: img = numpy.flipud(img)
         
         if self._dynamic_range != []:
-            im = plt.imshow(img, cmap = self._cmap, origin='lower', vmin = self._dynamic_range[0], vmax =self._dynamic_range[1])
+            plt.imshow(img, cmap = self._cmap, origin='lower', vmin = self._dynamic_range[0], vmax =self._dynamic_range[1])
         else:
-            im = plt.imshow(img, cmap = self._cmap, origin='lower')
+            plt.imshow(img, cmap = self._cmap, origin='lower')
             
         # Avoid creating colorbar twice:        
-        if fig_num is []:
-            plt.colorbar(shrink=0.5)            
+        if fig_num == []:
+            plt.colorbar()            
 
         plt.show()
         plt.pause(0.0001)
@@ -211,7 +226,7 @@ class display(subclass):
         self._figure_maker_(fig_num)
 
         slice_num = 0
-        img = self._parent.data.get_slice(slice_num)
+        img = self._parent.data.get_slice(slice_num, dim)
         fig = plt.imshow(img, cmap = self._cmap)
 
         plt.colorbar()
@@ -230,7 +245,8 @@ class display(subclass):
         '''
         self._figure_maker_(fig_num)
 
-        img = self._parent.analyse.sum(dim)
+        # Dont know why, but the sum turns out up side down
+        img = numpy.flipud(self._parent.analyse.sum(dim))
         
         if self._dynamic_range != []:
             plt.imshow(img, cmap = self._cmap, origin='lower', vmin = self._dynamic_range[0], vmax =self._dynamic_range[1])
@@ -277,9 +293,8 @@ class display(subclass):
 
 # **************************************************************
 #           PROCESS class
-# **************************************************************
-        
-    class process(subclass):
+# **************************************************************       
+class process(misc.subclass):
     '''
     Various preprocessing routines
     '''
@@ -306,64 +321,61 @@ class display(subclass):
         '''               
         if threshold is None:
             print('Computing half of the 99% percentile to use it as a threshold...')
+            
             # Compute 50% intensity of the 99% of values (filter out outlayers).
             threshold = self._parent.analyse.percentile(99) / 2
 
             print('Applying threshold...')
             
-            for jj, block in enumerate(self._parent.data):            
+            for jj, block in enumerate(self._parent.data):        
                 if binary:
                     if morethan:
-                        self._parent.data[jj] = numpy.array(block > threshold, dtype = 'float32')
+                        block = numpy.array(block > threshold, dtype = 'float32')
                     else:
-                        self._parent.data[jj] = numpy.array(block < threshold, dtype = 'float32')
+                        block = numpy.array(block < threshold, dtype = 'float32')
 
                 else:
                     
                     # Setting velues below threshold to zero:
                     if morethan:
-                        blk = block[block < threshold] = 0
+                        block = block[block < threshold] = 0
                     else:
-                        blk = block[block > threshold] = 0
-                        
-                    self._parent.data[jj] = blk
+                        block = block[block > threshold] = 0
+
+                self._parent.data[jj] = block
+                misc.progress_bar(jj / self._parent.data.block_number)
 
         # add a record to the history:
         self._parent.meta.history.add_record('process.threshold', [threshold, binary, morethan])
         
-    def interpolate_holes(self, kernel = [3,3,3], mask2d):
+    def interpolate_holes(self, mask2d, kernel = [3,3,3]):
         '''
         Fill in the holes, for instance, saturated pixels.
         
         Args:
-            mask2d: holes are zeros.
+            mask2d: holes are zeros. Mask is the same for all projections.
         '''
         
         prnt = self._parent
         
-        for ii in range(prnt.data.length):
+        for ii, block in enumerate(self._parent.data):    
                     
             # Compute the filler:
             tmp = ndimage.filters.gaussian_filter(mask2d, sigma = kernel)        
             tmp[tmp > 0] **= -1
 
-            tmp *= ndimage.filters.gaussian_filter(prnt.data[ii] * mask2d, sigma = kernel)
+            # Apply filler:                 
+            block = block * mask2d[:, None, :]           
+            block += ndimage.filters.gaussian_filter(block, sigma = kernel) * (~mask2d[:, None, :])
             
-            # Inverse the mask:            
-            mask2d = ~numpy.bool8(mask2d)
-        
-            # Apply filler:    
-            image = prnt.data[ii] 
-            image[mask2d] = tmp[mask2d]
+            self._parent.data[ii] = block   
 
-            prnt.data[ii] = image
-                
             # Show progress:
-            progress_bar(ii / prnt.data.length)
+            misc.progress_bar((ii+1) / self._parent.data.block_number)
             
-        self._parent.meta.history.add_record('process.interpolate_holes(kernel, mask2d)', kernel)
+        self._parent.meta.history.add_record('process.interpolate_holes(mask2d, kernel)', kernel)
 
-    def residual_rings(self, kernel=[3, 3]):
+    def residual_rings(self, kernel=[3, 1, 3]):
         '''
         Apply correction by computing outlayers .
         '''
@@ -373,22 +385,27 @@ class display(subclass):
         # Compute mean image of intensity variations that are < 5x5 pixels
         print('Our best agents are working on the case of the Residual Rings. This can take years if the kernel size is too big!')
 
-        tmp = prnt.data.empty_slice()
+        tmp = prnt.data.empty_block()
         
-        for ii in range(prnt.data.length):                    
+        for ii, block in enumerate(self._parent.data):                 
+            
             # Compute:
-            tmp += prnt.data[ii] - ndimage.filters.median_filter(prnt.data[ii], sigma = kernel) 
+            tmp += block - ndimage.filters.median_filter(block, size = kernel) 
+            
+            misc.progress_bar((ii+1) / self._parent.data.block_number)
             
         tmp /= prnt.data.length
         
         print('Subtract residual rings.')
         
-        for ii in range(prnt.data.length):
-            prnt.data[ii] = prnt.data[ii] - tmp
+        for ii, block in enumerate(self._parent.data):
+            block -= tmp
 
-            progress_bar(ii / prnt.data.length)
+            misc.progress_bar((ii+1) / self._parent.data.block_number)
+            
+            self._parent.data[ii] = block 
 
-        self._parent.meta.history.add_record('process.residual_rings(kernel)', kernel)
+        prnt.meta.history.add_record('process.residual_rings(kernel)', kernel)
         
         print('Residual ring correcion applied.')
 
@@ -397,17 +414,14 @@ class display(subclass):
         Subtracts a coeffificient from each projection, that equals to the intensity of air.
         We are assuming that air will produce highest peak on the histogram.
         '''
-        
         prnt = self._parent
-
-        print('Air intensity is subtracted')
+        print('Air intensity will be derived from 10 pixel wide border.')
         
-        for ii in range(prnt.data.length):
+        for ii, block in enumerate(self._parent.data):
 
             if air_val is None:  
                 # Take pixels that belong to the 5 pixel-wide margin.
-                border = prnt.data[ii]
-                border = [border[:10, :], border[-10:, :], border[:, -10:], border[:, :10]
+                border = numpy.array([block[:10, :], block[-10:, :], block[:, -10:], block[:, :10]])
               
                 y, x = numpy.histogram(border, 2**12)
                 x = (x[0:-1] + x[1:]) / 2
@@ -415,13 +429,15 @@ class display(subclass):
                 # Subtract maximum argument:    
                 val = x[y.argmax()]
                         
-                prnt.data[ii] = prnt.data[ii] - val
+                block = block - val
             else:
-                prnt.data[ii] = prnt.data[ii] - air_val
+                block = block - air_val
+                
+            self._parent.data[ii] = block
 
-            progress_bar(ii / prnt.data.length)
+            misc.progress_bar((ii+1) / self._parent.data.block_number)
                     
-        self._parent.meta.history.add_record('subtract_air(air_val)', air_val)        
+        prnt.meta.history.add_record('subtract_air(air_val)', air_val)        
     
     def medipix_quadrant_shift(self):
         '''
@@ -433,13 +449,18 @@ class display(subclass):
         # this one has to be applied to the whole dataset as it changes its size
         data = self._parent.data.total
         
+        misc.progress_bar(0)
         data[:,:, 0:data.shape[2]//2 - 2] = data[:,:, 2:data.shape[2]/2]
         data[:,:, data.shape[2]//2 + 2:] = data[:,:, data.shape[2]//2:-2]
+
+        misc.progress_bar(0.5)
 
         # Fill in two extra pixels:
         for ii in range(-2,2):
             closest_offset = -3 if (numpy.abs(-3-ii) < numpy.abs(2-ii)) else 2
             data[:,:, data.shape[2]//2 - ii] = data[:,:, data.shape[2]//2 + closest_offset]
+
+        misc.progress_bar(0.7)
 
         # Then in columns
         data[0:data.shape[0]//2 - 2,:,:] = data[2:data.shape[0]//2,:,:]
@@ -450,7 +471,11 @@ class display(subclass):
             closest_offset = -3 if (numpy.abs(-3-jj) < numpy.abs(2-jj)) else 2
             data[data.shape[0]//2 - jj,:,:] = data[data.shape[0]//2 + closest_offset,:,:]
 
+        misc.progress_bar(0.8)
+
         self._parent.data.total = data
+        
+        misc.progress_bar(1)
 
         self._parent.meta.history.add_record('Quadrant shift', 1)
         print('Medipix quadrant shift applied.')
@@ -460,6 +485,8 @@ class display(subclass):
         Apply flat field like they do it in skyscan.
         '''
         prnt = self._parent
+        
+        self._parent.message('Applying flat field of a skyscan type...')
         
         if self._parent.meta.geometry.roi_fov:
             print('Object is larger than the FOV!')   
@@ -471,11 +498,11 @@ class display(subclass):
             else:
                 air_values = numpy.max(block, axis = 2)
             
-            air_values = air_values.reshape((air_values.shape[0],air_values.shape[1],1))
+            air_values = air_values.reshape((air_values.shape[0], air_values.shape[1],1))
     
-            prnt.data[ii] = block / air_values
-
-            progress_bar(ii / prnt.data.length)
+            block = block / air_values
+            
+            self._parent.data[ii] = block
         
         # add a record to the history:
         self._parent.meta.history.add_record('process.skyscan_flat', 1)
@@ -488,11 +515,14 @@ class display(subclass):
         '''
         prnt = self._parent
         
-        for ii in range(prnt.data.length):
+        self._parent.message('Applying flat field....')
+        
+        # Go slice by slice:
+        for ii in range(prnt.data.length):     
             
-            prnt.data[ii] = block / air_values    
-            
-            ref = self._parent.data.get_ref(proj_num = ii)
+            img = prnt.data.get_slice(ii)
+                        
+            ref = self._parent.get_ref(proj_num = ii)
                 
             if numpy.min(ref) <= 0:
                 self._parent.warning('Flat field reference image contains zero (or negative) values! Will replace those with little tiny numbers.')
@@ -502,15 +532,15 @@ class display(subclass):
 
             # If there is a dark field, use it.
             if not prnt._dark is None:    
-                prnt.data[ii] = prnt.data[ii] - prnt._dark
+                img  = img - prnt._dark
 
                 # Is dark subtracted from ref images internally?
                 ref = ref - prnt._dark
                 
             # Use flat field:
-            prnt.data[ii] /= ref    
+            prnt.data.set_slice(ii, img / ref)
 
-            progress_bar(ii / prnt.data.length)
+            misc.progress_bar((ii+1) / prnt.data.length)
             
         # add a record to the history:
         self._parent.meta.history.add_record('process.flat_field', 1)
@@ -526,54 +556,68 @@ class display(subclass):
         
         prnt = self._parent
         
-        for ii in range(prnt.data.length):
-        
+        for ii, block in enumerate(prnt.data):
+            
             if (air_intensity != 1.0):
-                prnt.data[ii] /= air_intensity
+                block /= air_intensity
             
             # Apply a bound to large values:
-            prnt.data[ii] = numpy.clip(prnt.data[ii], a_min = numpy.exp(-upper_bound), a_max = numpy.exp(-lower_bound))
+            numpy.clip(block, a_min = numpy.exp(-upper_bound), a_max = numpy.exp(-lower_bound), out = block)
+                              
+            # negative logarithm
+            numpy.log(block, out = block)
+            numpy.negative(block, out = block)
             
-                  
-            # In-place negative logarithm
-            prnt.data[ii] = -numpy.log(prnt.data[ii])
+            # Save block
+            prnt.data[ii] = block
+
+            #print(ii)
             
             # Progress:
-            progress_bar(ii / prnt.data.length)
+            misc.progress_bar((ii+1) / self._parent.data.block_number)
                     
         self._parent.message('Logarithm is applied.')
         self._parent.meta.history.add_record('process.log(air_intensity, bounds)', [air_intensity, lower_bound, upper_bound])
 
-    def salt_pepper(self, kernel = [3, 3]):
+    def salt_pepper(self, kernel = [3, 1, 3]):
         '''
         Get rid of nasty speakles
         '''
         
         prnt = self._parent
         
-        for ii in range(prnt.data.length):    
+        for ii, block in enumerate(prnt.data):
             # Make a smooth version of the data and look for outlayers:
-            smooth = ndimage.filters.median_filter(prnt.data[ii], kernel)
-            mask = prnt.data[ii] / smooth
-            mask = (numpy.abs(mask) > 1.5) | (numpy.abs(mask) < 0.75)
+            smooth = ndimage.filters.median_filter(block, kernel)
+            mask = block / smooth
+            mask = (numpy.abs(mask) > 2) | (numpy.abs(mask) < 0.5)
 
-            img = prnt.data[ii]
-            img[mask] = smooth[mask]
-            prnt.data[ii] = img
+            block[mask] = smooth[mask]
+            prnt.data[ii] = block
 
-            progress_bar(ii / prnt.data.length)
+            misc.progress_bar((ii+1) / self._parent.data.block_number)
 
         self._parent.message('Salt and pepper filter is applied.')
 
         self._parent.meta.history.add_record('process.salt_pepper(kernel)', kernel)
 
-    def add_noise(self, std, mode = 'gaussian'):
+    def add_noise(self, std, mode = 'normal'):
         '''
         Noisify the projection data!
         '''
-        from skimage import util
         
-        self._parent.data.total = util.random_noise(self._parent.data.total, mode = mode, var = std**2)
+        for ii, block in enumerate(self._parent.data):
+            if mode == 'poisson':
+                block[block < 0] = 0
+                self._parent.data[ii] = numpy.random.poisson(block)
+                
+            elif mode == 'normal':
+                self._parent.data[ii] = numpy.random.normal(block, std)
+                
+            else: 
+                raise ValueError('Me not recognize the mode! Use normal or poisson!')
+                
+            misc.progress_bar((ii+1) / self._parent.data.block_number)
         
         self._parent.meta.history.add_record('process.add_noise(std, mode)', [std, mode])
         
@@ -586,8 +630,12 @@ class display(subclass):
         
         print('Applying tilt.')
         for ii in range(prnt.data.length):     
-            prnt.data[ii] = interp.rotate(prnt.data[ii], -tilt, reshape=False)
-            progress_bar(ii / prnt.data.length)
+            img = prnt.data.get_slice(ii)
+            img = ndimage.interpolation.rotate(img, -tilt, reshape=False)
+            
+            prnt.data.set_slice(ii, img)
+            
+            misc.progress_bar(ii / prnt.data.length)
             
         prnt.message('Tilt is applied.')                 
         
@@ -603,24 +651,38 @@ class display(subclass):
         if bottom_right[0] < 0: bottom_right[1] = 0
         if top_left[1] < 0: top_left[0] = 0
         if bottom_right[1] < 0: bottom_right[1] = 0
+
+        misc.progress_bar(0)
+        
+        # Since data size is changing we are going to apply crop to the total data:
+        data = self._parent.data.total
             
         if bottom_right[1] > 0:
-            self._parent.data._data = self._parent.data._data[top_left[1]:-bottom_right[1], :, :]
+            data = data[top_left[1]:-bottom_right[1], :, :]
         else:
-            self._parent.data._data = self._parent.data._data[top_left[1]:, :, :]
+            data = data[top_left[1]:, :, :]
+
+        misc.progress_bar(1/3)
 
         if bottom_right[0] > 0:
-            self._parent.data._data = self._parent.data._data[:, :, top_left[0]:-bottom_right[0]]
+            data = data[:, :, top_left[0]:-bottom_right[0]]
         else:
-            self._parent.data._data = self._parent.data._data[:, :, top_left[0]:]
+            data = data[:, :, top_left[0]:]
 
-        self._parent.data._data = numpy.ascontiguousarray(self._parent.data._data, dtype=numpy.float32)
+        misc.progress_bar(2/3)
+        
+        # Put the data back:
+        self._parent.data.total = data 
+        
+        misc.progress_bar(1)
+
+        # Clean up
         gc.collect()
         
-        if numpy.min(self._parent.data._data.shape) == 0:
+        if numpy.min(data.shape) == 0:
             self._parent.warning('Wow! We have just cropped the data to death! No data left.')
 
-        self._parent.meta.history.add_record('process.ccrop(top_left, bottom_right)', [top_left, bottom_right])
+        self._parent.meta.history.add_record('process.crop(top_left, bottom_right)', [top_left, bottom_right])
 
         self._parent.message('Sinogram cropped.')
         
@@ -628,6 +690,7 @@ class display(subclass):
         '''
         Transfer intensity values to equivalent thicknessb
         '''
+        prnt = self._parent
         
         # Assuming that we have log data!
         if not 'process.log(air_intensity, bounds)' in self._parent.meta.history.keys:                        
@@ -637,7 +700,7 @@ class display(subclass):
         
         # Attenuation of 1 mm:
         mu = simulate.spectra.linear_attenuation(energy, compound, density, thickness = 0.1)
-        width = self._parent.data.shape[2]
+        width = self._parent.data.slice_shape[1]
 
         # Make thickness range that is sufficient for interpolation:
         thickness_min = 0
@@ -662,10 +725,14 @@ class display(subclass):
 
         print('Applying transfer function.')    
         
-        for ii in range(prnt.data.length):  
+        for ii, block in enumerate(self._parent.data):        
+            block = numpy.array(numpy.interp(block, synth_counts, thickness), dtype = 'float32')
             
-            prnt.data[ii] = numpy.array(numpy.interp(prnt.data[ii], synth_counts, thickness), dtype = 'float32')
-            progress_bar(ii / prnt.data.length)
+            prnt.data[ii] = block
+            
+            misc.progress_bar((ii+1) / self._parent.data.block_number)
+            
+        self._parent.meta.history.add_record('process.equivalent_thickness(energy, spectrum, compound, density)', [energy, spectrum, compound, density])    
                                               
     def bin_projections(self):
         '''
@@ -673,15 +740,26 @@ class display(subclass):
         '''
         print('Binning projection data.')    
         
+        misc.progress_bar(0)
+        
         data = self._parent.data.total
         data[:, :, 0:-1:2] += data[:, :, 1::2]
         data = data[:, :, 0:-1:2] / 2
 
+        misc.progress_bar(0.5)
+
         data[0:-1:2, :, :] += data[1::2, :, :]
         data = data[0:-1:2, :, :] / 2
 
+        misc.progress_bar(0.75)
+
         self._parent.data.total = data
+        
+        misc.progress_bar(1)
 
         # Multiply the detecotr pixel width and height:
         self._parent.meta.geometry.det_pixel[0] = self._parent.meta.geometry.det_pixel[0] * 2
         self._parent.meta.geometry.det_pixel[1] = self._parent.meta.geometry.det_pixel[1] * 2
+
+        print('Binned.')
+        self._parent.meta.history.add_record('process.bin_projections()', 2)
