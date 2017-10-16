@@ -119,46 +119,89 @@ class geometry(misc.subclass):
     # Set/Get methods (very bodring part of code but, hopefully, it will make geometry look prettier from outside):              
     @property
     def src2obj(self):
+        '''
+        Source-to-object distance
+        '''
         return self._src2obj
         
     @src2obj.setter
     def src2obj(self, src2obj):
+        '''
+        Source-to-object distance
+        '''
         self._src2obj = src2obj
         
     @property
     def det2obj(self):
+        '''
+        Detector-to-object distance
+        '''
         return self._det2obj
         
     @det2obj.setter
     def det2obj(self, det2obj):
+        '''
+        Detector-to-object distance
+        '''
         self._det2obj = det2obj
         
     @property
     def magnification(self):
+        '''
+        Magnification. Computed assuming image plane at the rotation axis.
+        '''
         return (self._det2obj + self._src2obj) / self._src2obj
         
     @property
     def src2det(self):
+        '''
+        Source-to-detector distance
+        '''
         return self._src2obj + self._det2obj
         
     @property
     def det_pixel(self):
+        '''
+        Physical detector pixel size.
+        '''
         return self._det_pixel
         
     @det_pixel.setter
     def det_pixel(self, det_pixel):
+        '''
+        Physical detector pixel size.
+        '''
         self._det_pixel = det_pixel
         
     @property
     def img_pixel(self):
+        '''
+        Backprojection pixel size taking into account magnification.
+        '''
         return [self._det_pixel[0] / self.magnification, self._det_pixel[1] / self.magnification]  
         
     @img_pixel.setter
     def img_pixel(self, img_pixel):
+        '''
+        Backprojection pixel size taking into account magnification.
+        '''
         self._det_pixel = [img_pixel[0] * self.magnification, img_pixel[1] * self.magnification]        
         
     @property
+    def det_shape(self):
+        '''
+        Get the detector shape in pixels
+        '''
+        if self._parent.data is None:
+            self._parent.warning('No raw data in the pipeline. The detector size is not known.')
+        else:
+            return self._parent.data.slice_shape
+            
+    @property
     def det_size(self):
+        '''
+        Get the detector shape in mm
+        '''
         
         # We wont take into account the det_size from the log file. Only use actual data size.
         if self._parent.data is None:
@@ -236,7 +279,7 @@ class geometry(misc.subclass):
         else:    
             self._thetas = numpy.linspace(theta_range[0], theta_range[1], theta_n)    
     
-    def get_astra_vector(self, block = False):
+    def get_astra_vector(self, blocks = False):
         """
         Generate the vector that describes positions of the source and detector. + Returns the corrsponding projection geometry.
         If block == True: returns geometry of the current block.
@@ -247,7 +290,7 @@ class geometry(misc.subclass):
         det_count_z = sz[0]
 
         # Inintialize ASTRA projection geometry to import vector from it
-        if block:
+        if blocks:
             thetas = self.thetas[self._parent.data._index]
             
         else:
@@ -257,6 +300,14 @@ class geometry(misc.subclass):
         proj_geom = astra.functions.geom_2vec(proj_geom)
         
         return proj_geom['Vectors'], proj_geom
+
+    def get_proj_geom(self, blocks = False):
+        """
+        Generate ASTRA progection geometry.
+        """
+        vect, geom = self.get_astra_vector(blocks)
+        
+        return geom
     
 class vol_geometry(misc.subclass):
     """
@@ -272,42 +323,47 @@ class vol_geometry(misc.subclass):
         '''
         Use this to apply rotation and translation of the volume to the projection geometry that describes projection data.
         '''
+        
         # Extract vector:
         proj_geom = astra.functions.geom_2vec(proj_geom)
-        vector = proj_geom['Vectors']
+        vectors = proj_geom['Vectors']
     
-        # 
-        #det_centre = vectors[:, 3:6].copy() 
-
-        #det_axis_vrt = vectors[:, 9:12] * geometry.det_size[0] / 2 / self.det_pixel[0] 
-        #det_axis_hrz = vectors[:, 6:9] * geometry.det_size[1] / 2 / self.det_pixel[1] 
+        # Extract relevant vectors from the total ASTRA vector:
+        #det_shape = geometry.det_shape
+        det_shape = [proj_geom['DetectorRowCount'], proj_geom['DetectorColCount']]
+        px = [proj_geom['DetectorSpacingY'], proj_geom['DetectorSpacingX']]
+              
+        src_vect = vectors[:, 0:3]
+        det_vect = vectors[:, 3:6]
+        det_axis_vrt = vectors[:, 9:12] * det_shape[0] / 2
+        det_axis_hrz = vectors[:, 6:9] * det_shape[1] / 2
        
-        
         # Global transformation:
         # Rotation matrix based on Euler angles:
-        R = transforms3d.euler.euler2mat(self.vol_rot, 'szxy')
+        if self.vol_rot.abs().sum() > 0:
+            R = transforms3d.euler.euler2mat(self.vol_rot, 'szxy')
     
-        # Apply transformation:
-        det_axis_hrz[:] = numpy.dot(R, det_axis_hrz)
-        det_axis_vrt[:] = numpy.dot(R, det_axis_vrt)
-        src_vect[:] = numpy.dot(R, src_vect)
-        det_vect[:] = numpy.dot(R, det_vect)            
+            # Apply transformation:
+            det_axis_hrz[:] = numpy.dot(R, det_axis_hrz)
+            det_axis_vrt[:] = numpy.dot(R, det_axis_vrt)
+            src_vect[:] = numpy.dot(R, src_vect)
+            det_vect[:] = numpy.dot(R, det_vect)            
             
         # Add translation:
-        vect_norm = det_axis_vrt[2]
+        if self.vol_trans.abs().sum() > 0:    
+            vect_norm = det_axis_vrt[2]
+                
+            T = numpy.array([self.vol_trans[0] * vect_norm / px[1], self.vol_trans[2] * vect_norm / px[1], self.vol_trans[1] * vect_norm / px[0]])    
+            src_vect[:] -= T            
+            det_vect[:] -= T
             
-        T = numpy.array([self.vol_trans[0] * vect_norm / px[1], self.vol_trans[2] * vect_norm / px[1], self.vol_trans[1] * vect_norm / px[0]])    
-        src_vect[:] -= T            
-        det_vect[:] -= T
-        
         # Update proj_geom:
         sz = self._parent.data.slice_shape
+        
         det_count_x = sz[1]
         det_count_z = sz[0]
             
-        proj_geom = astra.create_proj_geom('cone_vec', det_count_z, det_count_x, vectors)    
-
-        return proj_geom
+        return astra.create_proj_geom('cone_vec', det_count_z, det_count_x, vectors)    
              
     def get_vol_geom(self, blocks = False):
         '''
@@ -472,9 +528,10 @@ class flex_geometry(geometry):
         vectors = self.get_astra_vector()
         
         det_centre = vectors[:, 3:6].copy() 
-
-        det_axis_vrt = vectors[:, 9:12] * geometry.det_size[0] / 2 / self.det_pixel[0] 
-        det_axis_hrz = vectors[:, 6:9] * geometry.det_size[1] / 2 / self.det_pixel[1] 
+        det_shape = geometry.det_shape
+        
+        det_axis_vrt = vectors[:, 9:12] * det_shape[0] / 2 
+        det_axis_hrz = vectors[:, 6:9] * det_size[1] / 2
        
         det_top = det_centre + det_axis_vrt
         det_bottom = det_centre - det_axis_vrt
@@ -605,14 +662,6 @@ class proj_meta(misc.subclass):
     physics = {'voltage': 0, 'current':0, 'exposure': 0}
     lyrics = {}
     
-    def get_proj_geom(self, blocks = True):
-        '''
-        TODO:
-        '''
-        vector, geom = geometry.get_astra_vector(blocks)
-    
-        return geom
-    
 # **************************************************************
 #           VOL_META class
 # **************************************************************        
@@ -634,9 +683,3 @@ class vol_meta(misc.subclass):
         misc.subclass.__init__(self, parent)
         
         self.geometry = vol_geometry(parent)
-    
-    def get_vol_geom(self, blocks = False):
-    '''
-    TODO
-    '''    
-        retrun self.geometry.get_vol_geom(blocks)

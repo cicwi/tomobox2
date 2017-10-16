@@ -61,7 +61,7 @@ import tomobox
 
 # Create data blocks and populate:
 proj = tomobox.projections()
-proj.switch_to_ssd()
+proj.switch_to_swap()
 
 # Create data blocks and populate block by block:
 proj.data[0] = proj.data.empty_block() + 1
@@ -74,7 +74,7 @@ import tomobox
 
 # Create data blocks and populate:
 proj = tomobox.projections()
-proj.switch_to_ssd()
+proj.switch_to_swap()
 
 proj.data.total = numpy.zeros([1000,1000,1000])
 
@@ -88,7 +88,7 @@ import tomobox
 
 # Create data blocks and populate:
 proj = tomobox.projections()
-proj.switch_to_ssd()
+proj.switch_to_swap()
 proj.io.read_flexray('/export/scratch3/kostenko/Fast_Data/rijksmuseum/tiling/al_dummy_vertical_tile_0')
 
 #%%

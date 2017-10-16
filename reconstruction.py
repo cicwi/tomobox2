@@ -6,6 +6,8 @@ Created: Oct 2017
 
 This module contains tomographic reconstruction routines based on ASTRA.
 """
+import astra
+import data
 
 # **************************************************************
 #           RECONSTRUCT class
@@ -48,10 +50,8 @@ class reconstruct(object):
         if (constraints is not None):
           cfg['option']['MinConstraint'] = constraints[0]
           cfg['option']['MaxConstraint'] = constraints[1]
-          
-      geom_sz = astra.functions.geom_size(self.vol_geom)
-      
-      try
+       
+        try:
           rec_id = astra.data3d.link('-vol', vol_geom, vol_data)
           sinogram_id = astra.data3d.link('-sino', self.proj_geom, proj_data)
     
@@ -63,7 +63,7 @@ class reconstruct(object):
           # TODO: replace this with astra.experimental....
           astra.algorithm.run(alg_id)
 
-      finally:
+        finally:
           astra.algorithm.delete(alg_id)
           astra.data3d.delete(rec_id)
           astra.data3d.delete(sinogram_id)
@@ -75,7 +75,7 @@ class reconstruct(object):
         
         cfg = astra.astra_dict('FP3D_CUDA')
                 
-      try:          
+        try:          
                     
           rec_id = astra.data3d.link('-vol', vol_geom, vol_data)
           
@@ -88,7 +88,7 @@ class reconstruct(object):
     
           astra.algorithm.run(alg_id, 1)
 
-      finally:
+        finally:
           astra.algorithm.delete(alg_id)
           astra.data3d.delete(rec_id)
           astra.data3d.delete(sinogram_id)
@@ -102,19 +102,22 @@ class reconstruct(object):
         vol_geom = self.volume.meta.get_vol_geom()
         
         # This will only work with RAM volume data! Otherwice, need to set data to 'total'.
-        if isinstance(self.volume.data, data.data_blocks_ssd):
+        if isinstance(self.volume.data, data.data_blocks_swap):
             raise ValueError('Backprojection doesn`t support SSD data blocks for volumes!')
             
+        # Pointer to the total volume:    
         vol_data = self.volume.data.total
         
         # Loop over different projection stacks:
-        for proj in self.projections:
-        
-            # ASTRA projection geometry:
-            proj_geom = proj.meta.get_proj_geom()
+        for proj in self.projections:        
             
             # Loop over blocks of data to save RAM:
             for block in proj.data:
+                
+                # ASTRA projection geometry for the current block:
+                proj_geom = proj.meta.geometry.get_proj_geom(blocks = True)
+                
+                # Backprojection:
                 self._backproject_block(block, proj_geom, vol_data, vol_geom, algorithm, constraints)    
         
     def forwardproject(self):
@@ -129,7 +132,7 @@ class reconstruct(object):
         for proj in self.projections:
             
             # This will only work with RAM volume data! Otherwise, need to use 'total' setter.
-            if isinstance(proj.data, data.data_blocks_ssd):
+            if isinstance(proj.data, data.data_blocks_swap):
                 raise ValueError('Forwardprojection doesn`t support SSD data blocks for projections!')
             
             proj_data = proj.data.total
@@ -139,7 +142,9 @@ class reconstruct(object):
             
             # Loop over blocks of data to save RAM:
             for block in self.volume.data:
-                self._forwardproject_block(block, proj_geom, vol_data, vol_geom)    
+                
+                vol_geom = self.volume.meta.geometry.get_vol_geom(blocks = True)
+                self._forwardproject_block(proj_data, proj_geom, block, vol_geom)    
         
     def FDK(self):
         '''
@@ -148,17 +153,17 @@ class reconstruct(object):
         # Switch to a different data storage if needed:
         self.volume.data.switch_to_ram(keep_data = True)
         
-        for proj in self.projections:
-            
-            if proj.data.sizeGB > 1:
-                proj.data.switch_to_ssd(keep_data = True)
+        #for proj in self.projections:
+        #    
+        #    if proj.data.sizeGB > 1:
+        #        proj.data.switch_to_swap(keep_data = True)
         
         # Run the reconstruction:
         self.backproject(algorithm='FDK_CUDA')
 
         # Update history:    
-        self.volume.meta.history.add_record('set data.data', [])
-        
+        self.volume.meta.history.add_record('Reconstruction generated using FDK.', [])
+    '''    
     def SIRT(self, iterations = 3):
         '''
         Simultaneous Iterative Reconstruction Technique... also known as James
@@ -219,4 +224,4 @@ class reconstruct(object):
         '''
         
 # TODO: random access
-
+    '''

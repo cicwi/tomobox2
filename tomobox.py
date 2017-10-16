@@ -24,7 +24,7 @@ from analysis import analyse
 
 from data import io        
 from data import data_blocks
-from data import data_blocks_ssd
+from data import data_blocks_swap
 from meta import proj_meta
 from meta import vol_meta
 
@@ -100,41 +100,6 @@ class projections(object):
         self.display = display(self)
         self.analyse = analyse(self)
         
-    def switch_to_ram(self, keep_data = False, block_sizeGB = 1):
-        """
-        Switches data to a RAM based array.
-        """
-        if isinstance(self.data, data_blocks):
-            print('Warning! Can`t switch to RAM based data, it already is RAM based!')
-            
-            return 
-            
-        if keep_data:
-            # First copy the data:
-            self.data = data_blocks(array = self.data.total, block_sizeGB = block_sizeGB, dtype='float32')
-            
-        else:
-            # Create new:
-            self.data = data_blocks(block_sizeGB = block_sizeGB, dtype='float32')
-    
-    def switch_to_ssd(self, keep_data = False, block_sizeGB = 1, swap_path = '/export/scratch3/kostenko/Fast_Data/swap'):
-        """
-        Switches data to an SSD based array.
-        """
-        
-        if isinstance(self.data, data_blocks_ssd):
-            print('Warning! Can`t switch to SSD based data, it already is SSD based!')
-            
-            return 
-            
-        if keep_data:
-            # First copy the data:
-            self.data = data_blocks_ssd(array = self.data.total, block_sizeGB = block_sizeGB, dtype='float32', swap_path = swap_path)
-            
-        else:
-            # Create new:
-            self.data = data_blocks_ssd(block_sizeGB = block_sizeGB, dtype='float32', swap_path = swap_path)
-    
     def __del__(self):
         
         # Make sure the data is killed: 

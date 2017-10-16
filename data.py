@@ -59,6 +59,45 @@ class data_blocks(object):
         gc.collect()
         
         print('Bye bye data_blocks!')
+        
+    def switch_to_ram(self, keep_data = False, block_sizeGB = 1):
+        """
+        Switches data to a RAM based array.
+        """
+        
+        if isinstance(self, data_blocks):
+            print('I am already in RAM memory!')
+            
+            return 
+            
+        if keep_data:
+            
+            # First copy the data:
+            new_data = data_blocks(array = self.data.total, block_sizeGB = block_sizeGB, dtype='float32')
+        else:
+            # Create new:
+            new_data = data_blocks(block_sizeGB = block_sizeGB, dtype='float32')
+            
+        self = new_data    
+    
+    def switch_to_swap(self, keep_data = False, block_sizeGB = 1, swap_path = '/export/scratch3/kostenko/Fast_Data/swap'):
+        """
+        Switches data to an SSD based array.
+        """
+        
+        if isinstance(self, data_blocks_swap):
+            print('We are already swappin!')
+            return 
+            
+        if keep_data:
+            # First copy the data:
+            new_data = data_blocks_swap(array = self.data.total, block_sizeGB = block_sizeGB, dtype='float32', swap_path = swap_path)
+            
+        else:
+            # Create new:
+            new_data = data_blocks_swap(block_sizeGB = block_sizeGB, dtype='float32', swap_path = swap_path)   
+            
+        self = new_data    
                     
     @staticmethod   
     def _set_dim_data(data, dim, key, image):    
@@ -348,9 +387,9 @@ class data_blocks(object):
         return self.size / 1073741824 * self.dtype.itemsize    
  
 # **************************************************************
-#           data_blocks_ssd class
+#           data_blocks_swap class
 # **************************************************************
-class data_blocks_ssd(data_blocks):
+class data_blocks_swap(data_blocks):
     """
     This class doesn't keep data in RAM memory. It has a swap storage on SSD disk 
     and keeps only one block of data in the RAM buffer.
@@ -475,7 +514,7 @@ class data_blocks_ssd(data_blocks):
         """  
         
         if not dim is None:
-            if dim != self._dim: raise Exception('data_blocks_ssd can only retrieve slices along its main dimension.')
+            if dim != self._dim: raise Exception('data_blocks_swap can only retrieve slices along its main dimension.')
                                    
         # Do we have a buffer of that slice?
         if key == self._buffer_slice_key:
