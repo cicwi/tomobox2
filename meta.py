@@ -168,7 +168,9 @@ class geometry(misc.subclass):
         
     @property
     def thetas(self):
-        
+        '''
+        Theats of the whole dataset.
+        '''
         # Check consistency with the data size:
         if not self._parent.data is None:
             if self._parent.data.length != numpy.size(self._thetas):
@@ -180,7 +182,21 @@ class geometry(misc.subclass):
         
     @thetas.setter
     def thetas(self, thetas):
+        '''
+        Set thetas of the whole dataset
+        '''
         self._thetas = numpy.array(thetas)
+    
+    @property
+    def block_thetas(self):
+        '''
+        Return thetas of the current data block.
+        '''
+        
+        thetas = self.thetas
+        index = slice(self._parent.data._index)
+        
+        return thetas[index]
     
     @property
     def theta_n(self):
@@ -220,9 +236,10 @@ class geometry(misc.subclass):
         else:    
             self._thetas = numpy.linspace(theta_range[0], theta_range[1], theta_n)    
     
-    def get_astra_vector(self):
+    def get_astra_vector(self, block = False):
         """
         Generate the vector that describes positions of the source and detector. + Returns the corrsponding projection geometry.
+        If block == True: returns geometry of the current block.
         """
         
         sz = self._parent.data.slice_shape
@@ -230,11 +247,97 @@ class geometry(misc.subclass):
         det_count_z = sz[0]
 
         # Inintialize ASTRA projection geometry to import vector from it
-        proj_geom = astra.create_proj_geom('cone', self.det_pixel[1], self.det_pixel[0], det_count_z, det_count_x, self.thetas, self.src2obj, self.det2obj)
+        if block:
+            thetas = self.thetas[self._parent.data._index]
+            
+        else:
+            thetas = self.thetas
+            
+        proj_geom = astra.create_proj_geom('cone', self.det_pixel[1], self.det_pixel[0], det_count_z, det_count_x, thetas, self.src2obj, self.det2obj)
         proj_geom = astra.functions.geom_2vec(proj_geom)
         
         return proj_geom['Vectors'], proj_geom
+    
+class vol_geometry(misc.subclass):
+    """
+    A separate compact class to describe volume geometry.
+    """
+    vol_trans = [0, 0, 0]     # not per projection
+    vol_rot = [0, 0, 0]       # not per projecrion
+    
+    vol_size = [0, 0, 0]      # volume size in pixels
+    voxel_size = [0, 0, 0]    # voxel size in mm
+    
+    def modify_proj_geom(self, proj_geom, blocks = False):
+        '''
+        Use this to apply rotation and translation of the volume to the projection geometry that describes projection data.
+        '''
+        # Extract vector:
+        proj_geom = astra.functions.geom_2vec(proj_geom)
+        vector = proj_geom['Vectors']
+    
+        # 
+        #det_centre = vectors[:, 3:6].copy() 
 
+        #det_axis_vrt = vectors[:, 9:12] * geometry.det_size[0] / 2 / self.det_pixel[0] 
+        #det_axis_hrz = vectors[:, 6:9] * geometry.det_size[1] / 2 / self.det_pixel[1] 
+       
+        
+        # Global transformation:
+        # Rotation matrix based on Euler angles:
+        R = transforms3d.euler.euler2mat(self.vol_rot, 'szxy')
+    
+        # Apply transformation:
+        det_axis_hrz[:] = numpy.dot(R, det_axis_hrz)
+        det_axis_vrt[:] = numpy.dot(R, det_axis_vrt)
+        src_vect[:] = numpy.dot(R, src_vect)
+        det_vect[:] = numpy.dot(R, det_vect)            
+            
+        # Add translation:
+        vect_norm = det_axis_vrt[2]
+            
+        T = numpy.array([self.vol_trans[0] * vect_norm / px[1], self.vol_trans[2] * vect_norm / px[1], self.vol_trans[1] * vect_norm / px[0]])    
+        src_vect[:] -= T            
+        det_vect[:] -= T
+        
+        # Update proj_geom:
+        sz = self._parent.data.slice_shape
+        det_count_x = sz[1]
+        det_count_z = sz[0]
+            
+        proj_geom = astra.create_proj_geom('cone_vec', det_count_z, det_count_x, vectors)    
+
+        return proj_geom
+             
+    def get_vol_geom(self, blocks = False):
+        '''
+        Initialize volume geometry.        
+        '''
+        size = self.vol_size
+        size_mm = size * self.voxel_size
+        
+        if blocks:
+            # Generate volume geometry for one chunk of data:
+            start = self._parent.data._index[0]    
+            stop = self._parent.data._index[-1]
+            
+            length = self._parent.data.length
+            
+            # Compute offset from the centre:
+            centre = (length - 1) / 2
+            offset = (start + stop) / 2 - centre
+            
+            size[1] = (stop - start + 1) 
+            size_mm = size * self.voxel_size
+        
+        else:
+            offset = 0
+            
+        vol_geom = astra.create_vol_geom(size[1], size[0], size[2], 
+                  -size_mm[0]/2 + offset, size_mm[0]/2, -size_mm[1]/2, size_mm[1]/2 + offset, 
+                  size_mm[2]/2, size_mm[2]/2)
+            
+        return vol_geom
     
 class flex_geometry(geometry):
     """
@@ -409,10 +512,10 @@ class flex_geometry(geometry):
         """
         Generate the vector that describes positions of the source and detector.
         """
-        # Call parrent method
+        # Call parent method
         vectors, proj_geom = geometry.get_astra_vector(self)
         
-        
+        # Modify vector and apply it to astra projection geometry:
         for ii in range(0, vectors.shape[0]):
             
             # Define vectors:
@@ -474,13 +577,20 @@ class flex_geometry(geometry):
             T = numpy.array([self.vol_trans[0] * vect_norm / px[1], self.vol_trans[2] * vect_norm / px[1], self.vol_trans[1] * vect_norm / px[0]])    
             src_vect[:] -= T            
             det_vect[:] -= T
-
+        
+        # Update proj_geom:
+        sz = self._parent.data.slice_shape
+        det_count_x = sz[1]
+        det_count_z = sz[0]
+            
+        proj_geom = astra.create_proj_geom('cone_vec', det_count_z, det_count_x, vectors)    
+        
         return vectors, proj_geom
 
 # **************************************************************
-#           META class
+#           PROJ_META class
 # **************************************************************        
-class meta(misc.subclass):
+class proj_meta(misc.subclass):
     '''
     This object contains various properties of the imaging system and the history of pre-processing.
     '''
@@ -494,3 +604,39 @@ class meta(misc.subclass):
         
     physics = {'voltage': 0, 'current':0, 'exposure': 0}
     lyrics = {}
+    
+    def get_proj_geom(self, blocks = True):
+        '''
+        TODO:
+        '''
+        vector, geom = geometry.get_astra_vector(blocks)
+    
+        return geom
+    
+# **************************************************************
+#           VOL_META class
+# **************************************************************        
+class vol_meta(misc.subclass):
+    '''
+    This object contains properties of the volume system and the history of pre-processing.
+    '''
+    history = history()
+    
+    size = None
+    size_mm = None
+    
+    offset = None
+    rotation = None
+    
+    geometry = None
+    
+    def __init__(self, parent):
+        misc.subclass.__init__(self, parent)
+        
+        self.geometry = vol_geometry(parent)
+    
+    def get_vol_geom(self, blocks = False):
+    '''
+    TODO
+    '''    
+        retrun self.geometry.get_vol_geom(blocks)

@@ -18,19 +18,55 @@ import warnings
 
 # Own modules:
 from analysis import process
+from analysis import postprocess
 from analysis import display
 from analysis import analyse
 
 from data import io        
 from data import data_blocks
 from data import data_blocks_ssd
-from meta import meta
+from meta import proj_meta
+from meta import vol_meta
 
-#from reconstruction import reconstruct    
+from reconstruction import reconstruct
 
 # System modules:
 #import gc
 
+# **************************************************************
+#           VOLUME class
+# **************************************************************
+class volume(object):
+    """
+    Container for the reconstructed volume data.
+    """
+    # Reconstructed data:
+    data = None
+    
+    # Meta data (geometry, history etc.):
+    meta = None
+    
+    # Sub-classes:
+    io = None
+    process = None
+    display = None
+    analyse = None
+    
+    # ASTRA related:
+    _vol_geom = None
+    
+    def __init__(self, size, size_mm):
+        
+        self.data = data_blocks(block_sizeGB = 1)
+        self.data.dim = 0
+        
+        self.meta = vol_meta(self, size, size_mm)
+        
+        self.io = io(self)
+        self.process = postprocess(self)
+        self.display = display(self)
+        self.analyse = analyse(self)
+        
 # **************************************************************
 #           PROJECTIONS class
 # **************************************************************
@@ -57,22 +93,53 @@ class projections(object):
     def __init__(self):
         
         self.data = data_blocks(block_sizeGB = 1)
-        self.meta = meta(self)
+        self.meta = proj_meta(self)
         
         self.io = io(self)
         self.process = process(self)
         self.display = display(self)
         self.analyse = analyse(self)
         
-    def switch_to_ssd(self, swap_path = '/export/scratch3/kostenko/Fast_Data/swap'):
+    def switch_to_ram(self, keep_data = False, block_sizeGB = 1):
+        """
+        Switches data to a RAM based array.
+        """
+        if isinstance(self.data, data_blocks):
+            print('Warning! Can`t switch to RAM based data, it already is RAM based!')
+            
+            return 
+            
+        if keep_data:
+            # First copy the data:
+            self.data = data_blocks(array = self.data.total, block_sizeGB = block_sizeGB, dtype='float32')
+            
+        else:
+            # Create new:
+            self.data = data_blocks(block_sizeGB = block_sizeGB, dtype='float32')
+    
+    def switch_to_ssd(self, keep_data = False, block_sizeGB = 1, swap_path = '/export/scratch3/kostenko/Fast_Data/swap'):
         """
         Switches data to an SSD based array.
         """
-        self.data = data_blocks_ssd(block_sizeGB = 1, dtype='float32', swap_path = swap_path)
+        
+        if isinstance(self.data, data_blocks_ssd):
+            print('Warning! Can`t switch to SSD based data, it already is SSD based!')
+            
+            return 
+            
+        if keep_data:
+            # First copy the data:
+            self.data = data_blocks_ssd(array = self.data.total, block_sizeGB = block_sizeGB, dtype='float32', swap_path = swap_path)
+            
+        else:
+            # Create new:
+            self.data = data_blocks_ssd(block_sizeGB = block_sizeGB, dtype='float32', swap_path = swap_path)
     
     def __del__(self):
-        pass
-    
+        
+        # Make sure the data is killed: 
+        self.data = None
+            
     def message(self, msg):
         '''
         Send a message to IPython console.

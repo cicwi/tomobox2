@@ -292,6 +292,27 @@ class display(misc.subclass):
         plt.pause(0.0001)
 
 # **************************************************************
+#           POSTPROCESS class
+# **************************************************************       
+class postprocess(misc.subclass):
+    '''
+    Processing for the volume data. Similar to process class, but takes
+    into account volume specifics.
+    '''
+    
+    def arbitrary_function(self, func):
+        '''
+        Apply an arbitrary function:
+        '''
+        postprocess.arbitrary_function(self, func)
+        
+    def threshold(self, threshold = None, binary = True, morethan = True):
+        '''
+        Apply simple segmentation of value bounds.
+        '''
+        postprocess.threshold(self, threshold = None, binary = True, morethan = True):
+        
+# **************************************************************
 #           PROCESS class
 # **************************************************************       
 class process(misc.subclass):
