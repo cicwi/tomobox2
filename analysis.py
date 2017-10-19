@@ -69,14 +69,19 @@ class analyse(misc.subclass):
         """
         Compute minimum.
         """
-        val = 10**10
         
-        block = self._parent.data[0]
-
-        val = numpy.min(block, dim)
-        
-        for block in self._parent.data[1:]:
-            val = numpy.min((val, numpy.min(block, dim)), 0)
+        # Initial:
+        if dim is not None:
+            val = self._parent.data.empty_slice(numpy.inf)
+        else:
+            val = numpy.inf
+       
+        # Min    
+        for block in self._parent.data:
+            if dim is not None:
+                val = numpy.min((val, numpy.min(block, dim)), 0)
+            else:
+                val = numpy.min((val, numpy.min(block)))
             
         return val
 
@@ -84,14 +89,18 @@ class analyse(misc.subclass):
         """
         Compute maximum.
         """
-        val = -10**10
-        
-        block = self._parent.data[0]
-
-        val = numpy.max(block, dim)
-        
-        for block in self._parent.data[1:]:
-            val = numpy.max((val, numpy.max(block, dim)), 0)
+        # Initial:
+        if dim is not None:
+            val = self._parent.data.empty_slice(-numpy.inf)
+        else:
+            val = -numpy.inf
+                
+        for block in self._parent.data:
+            if dim is not None:
+                val = numpy.max((val, numpy.max(block, dim)), 0)
+                
+            else:
+                val = numpy.max((val, numpy.max(block)))
             
         return val
         
@@ -304,13 +313,13 @@ class postprocess(misc.subclass):
         '''
         Apply an arbitrary function:
         '''
-        postprocess.arbitrary_function(self, func)
+        process.arbitrary_function(self, func)
         
     def threshold(self, threshold = None, binary = True, morethan = True):
         '''
         Apply simple segmentation of value bounds.
         '''
-        postprocess.threshold(self, threshold = None, binary = True, morethan = True):
+        process.threshold(self, threshold = None, binary = True, morethan = True)
         
 # **************************************************************
 #           PROCESS class
@@ -377,8 +386,6 @@ class process(misc.subclass):
             mask2d: holes are zeros. Mask is the same for all projections.
         '''
         
-        prnt = self._parent
-        
         for ii, block in enumerate(self._parent.data):    
                     
             # Compute the filler:
@@ -406,12 +413,12 @@ class process(misc.subclass):
         # Compute mean image of intensity variations that are < 5x5 pixels
         print('Our best agents are working on the case of the Residual Rings. This can take years if the kernel size is too big!')
 
-        tmp = prnt.data.empty_block()
+        tmp = prnt.data.empty_slice()
         
         for ii, block in enumerate(self._parent.data):                 
             
             # Compute:
-            tmp += block - ndimage.filters.median_filter(block, size = kernel) 
+            tmp += (block - ndimage.filters.median_filter(block, size = kernel)).sum(1)
             
             misc.progress_bar((ii+1) / self._parent.data.block_number)
             
@@ -420,7 +427,7 @@ class process(misc.subclass):
         print('Subtract residual rings.')
         
         for ii, block in enumerate(self._parent.data):
-            block -= tmp
+            block -= tmp[:, None, :]
 
             misc.progress_bar((ii+1) / self._parent.data.block_number)
             

@@ -15,6 +15,7 @@ This module contains the Great Mighty Tomobox.
 #import astra
 import numpy
 import warnings
+import gc
 
 # Own modules:
 from analysis import process
@@ -30,20 +31,17 @@ from meta import vol_meta
 
 from reconstruction import reconstruct
 
-# System modules:
-#import gc
 
 # **************************************************************
-#           VOLUME class
+#           TOMOGRAPHIC_DATA class
 # **************************************************************
-class volume(object):
+class tomographic_data(object):
     """
-    Container for the reconstructed volume data.
+    This is a data container class that will be inherited by volume and projections classes.
     """
-    # Reconstructed data:
-    data = None
     
-    # Meta data (geometry, history etc.):
+    # Data:
+    data = None    
     meta = None
     
     # Sub-classes:
@@ -52,53 +50,122 @@ class volume(object):
     display = None
     analyse = None
     
-    # ASTRA related:
-    _vol_geom = None
-    
-    def __init__(self, size, size_mm):
+    def __init__(self):
+        # Default RAM based data array:
+        self.data = data_blocks(block_sizeGB = 1)        
         
-        self.data = data_blocks(block_sizeGB = 1)
-        self.data.dim = 0
-        
-        self.meta = vol_meta(self, size, size_mm)
-        
+        # Common classes for the cvolume and for the projections:
         self.io = io(self)
-        self.process = postprocess(self)
         self.display = display(self)
         self.analyse = analyse(self)
+    
+    def switch_to_ram(self, keep_data = False, block_sizeGB = None):
+        """
+        Switches data to a RAM based array.
+        """
+        
+        if not isinstance(self.data, data_blocks_swap):
+            print('I am already in RAM memory!')
+            
+            return 
+            
+        if block_sizeGB is None:
+            block_sizeGB = self.data._block_sizeGB
+
+        if keep_data:
+            
+            # First copy the data:
+            new_data = data_blocks(array = self.data.total, block_sizeGB = block_sizeGB)
+        else:
+            # Create new:
+            new_data = data_blocks(block_sizeGB = block_sizeGB)
+            
+        self.data = new_data  
+        
+        # Clean up!
+        gc.collect()
+
+        print('Switched to data_blocks_ram')
+    
+    def switch_to_swap(self, keep_data = False, block_sizeGB = None, swap_path = '/export/scratch3/kostenko/Fast_Data/swap'):
+        """
+        Switches data to an SSD based array.
+        """
+        
+        if isinstance(self.data, data_blocks_swap):
+            print('We are already swappin!')
+            return 
+            
+        if block_sizeGB is None:
+            block_sizeGB = self.data._block_sizeGB    
+            
+        if keep_data:
+            # First copy the data:
+            new_data = data_blocks_swap(array = self.data.total, block_sizeGB = block_sizeGB, dtype='float32', swap_path = swap_path)
+            
+        else:
+            # Create new:
+            new_data = data_blocks_swap(block_sizeGB = block_sizeGB, dtype='float32', swap_path = swap_path)   
+            
+        self.data = new_data  
+        
+        # Clean up!
+        gc.collect()
+        
+        print('Switched to data_blocks_swap')
+
+# **************************************************************
+#           VOLUME class
+# **************************************************************
+class volume(tomographic_data):
+    """
+    Container for the reconstructed volume data.
+    """
+      
+    def __init__(self, size = [0,0,0], img_pixel = [0,0,0]):
+        
+        # Initializa parent class:
+        tomographic_data.__init__(self)
+        
+        # Set the correct main axis for the data object:
+        self.data.dim = 0
+        
+        self.meta = vol_meta(self)
+        self.process = postprocess(self)
+        
+        self.initialize_volume(size, img_pixel)
+        
+    def initialize_volume(self, size, img_pixel):
+        '''
+        Initialize a dataset of a given size
+        '''        
+        
+        self.data.total = numpy.zeros(size, dtype = numpy.float32)
+        self.meta.geometry.img_pixel = img_pixel
         
 # **************************************************************
 #           PROJECTIONS class
 # **************************************************************
 
-class projections(object):
+class projections(tomographic_data):
     """
     Container for the projection data.
     """
-    # Main container for the data:
-    data = None 
-    
-    # Corresponding meta data (geometry, history):
-    meta = None
-    
-    # Some data handling routines:
-    io = None
-    process = None
-    display = None
-    analyse = None
-    
+    # Projections-specific fields:    
     _ref  = []
     _dark = []
     
     def __init__(self):
         
-        self.data = data_blocks(block_sizeGB = 1)
+        # Initializa parent class:
+        tomographic_data.__init__(self)
+        
+        # Sinograms should have dim = 1 as a main axis:
+        self.data.dim = 1
         self.meta = proj_meta(self)
         
-        self.io = io(self)
+        # Processing for sinograms:
         self.process = process(self)
-        self.display = display(self)
-        self.analyse = analyse(self)
         
     def __del__(self):
         
@@ -164,7 +231,7 @@ class projections(object):
            return self._ref  
 
 # **************************************************************
-#           SINOGRAM class
+#           TOMOBOX class
 # **************************************************************
 
 class tomobox(object):

@@ -30,6 +30,7 @@ class data_blocks(object):
     """
     # Da data, in RAM version of data_blocks, _buffer contains the entire data:
     _buffer = []
+    _buffer_key = None
 
     # Block index (in slice numbers):
     _index = []
@@ -44,9 +45,9 @@ class data_blocks(object):
     random_iterator = False
     
     
-    def __init__(self, array = [], block_sizeGB = 4, dim = 1):
-                
-        self.total = numpy.array(array, dtype = 'float32')
+    def __init__(self, array = [], dtype = 'float32', block_sizeGB = 4, dim = 1):
+             
+        self.total = numpy.array(array, dtype = dtype)
         
         self._dim = dim
         self._block_sizeGB = block_sizeGB
@@ -60,45 +61,12 @@ class data_blocks(object):
         
         print('Bye bye data_blocks!')
         
-    def switch_to_ram(self, keep_data = False, block_sizeGB = 1):
+    def change_block_size(self, block_sizeGB):
         """
-        Switches data to a RAM based array.
+        Change the block size and update the current block.
         """
-        
-        if isinstance(self, data_blocks):
-            print('I am already in RAM memory!')
-            
-            return 
-            
-        if keep_data:
-            
-            # First copy the data:
-            new_data = data_blocks(array = self.data.total, block_sizeGB = block_sizeGB, dtype='float32')
-        else:
-            # Create new:
-            new_data = data_blocks(block_sizeGB = block_sizeGB, dtype='float32')
-            
-        self = new_data    
-    
-    def switch_to_swap(self, keep_data = False, block_sizeGB = 1, swap_path = '/export/scratch3/kostenko/Fast_Data/swap'):
-        """
-        Switches data to an SSD based array.
-        """
-        
-        if isinstance(self, data_blocks_swap):
-            print('We are already swappin!')
-            return 
-            
-        if keep_data:
-            # First copy the data:
-            new_data = data_blocks_swap(array = self.data.total, block_sizeGB = block_sizeGB, dtype='float32', swap_path = swap_path)
-            
-        else:
-            # Create new:
-            new_data = data_blocks_swap(block_sizeGB = block_sizeGB, dtype='float32', swap_path = swap_path)   
-            
-        self = new_data    
-                    
+        self._block_sizeGB = block_sizeGB
+                            
     @staticmethod   
     def _set_dim_data(data, dim, key, image):    
         """
@@ -153,6 +121,8 @@ class data_blocks(object):
         stop = min((stop, self.length)) 
         
         self._index = numpy.arange(start, stop)
+        
+        return start, stop
         
     def empty_block(self, val = 0):
         """
@@ -211,6 +181,8 @@ class data_blocks(object):
         self._update_index(key)    
         data = self._get_dim_data(self._buffer, self._dim, slice(self._index[0], self._index[-1] + 1))
         
+        self._buffer_key = key
+        
         return numpy.ascontiguousarray(data)      
         
     def __setitem__(self, key, data):    
@@ -220,6 +192,8 @@ class data_blocks(object):
         self._update_index(key)   
         
         self._set_dim_data(self._buffer, self._dim, slice(self._index[0], self._index[-1] + 1), data)      
+        
+        self._buffer_key = key
         
     def get_random_block(self):
         """
@@ -271,8 +245,7 @@ class data_blocks(object):
         else:
             if self._buffer_key < (self.block_number - 1):
                 
-                self._buffer_key += 1
-                block = self[self._buffer_key]
+                block = self[self._buffer_key + 1]
     
             else:     
                 # End loop, update block:
@@ -285,7 +258,6 @@ class data_blocks(object):
         Return current block indexes. Can be used to create a meshgrid for instance.
         """
         # Current block:
-        key = self._buffer_key      
         shp = self.block_shape
         
         x = numpy.arange(0, shp[0])
@@ -293,11 +265,11 @@ class data_blocks(object):
         z = numpy.arange(0, shp[2])
 
         if self._dim == 0:
-            x += self.index[0]
+            x += self._index[0]
         elif self._dim == 1:
-            y += self.index[0]
+            y += self._index[0]
         else:
-            z += self.index[0]        
+            z += self._index[0]        
 
         return [x,y,z]
     
@@ -313,8 +285,8 @@ class data_blocks(object):
         """
         Set all data. 
         """ 
+        #print('Setting array:', array.shape)
         self._buffer = array   
-        
         
     @property
     def shape(self):
@@ -339,12 +311,14 @@ class data_blocks(object):
     @property    
     def block_shape(self):
         """
-        Shape of the block:
+        Shape of the block. It might overestimate the shape of the last block, be careful!
         """
         sz = self.shape
         
         if sz.size > 0:
-            sz[self._dim] /= self.block_number
+            
+            # Use actual index to take into account that the last block can be shorter 
+            sz[self._dim] = self._index.size
 
         else:
             raise ValueError('Data shape was not initialized yet!')
@@ -416,20 +390,22 @@ class data_blocks_swap(data_blocks):
     _swap_path = ''
     _swap_name = 'swap'
     
-    def __init__(self, array = None, shape = None, dtype = None, block_sizeGB = 1, dim = 1, swap_path = ''):
+    def __init__(self, array = None, shape = None, dtype = 'float32', block_sizeGB = 1, dim = 1, swap_path = ''):
         
         self._dim = dim
         self._block_sizeGB = block_sizeGB
         
         self._swap_path = swap_path
+        
+        self._my_dtype = numpy.dtype(dtype)
+        
         if not os.path.exists(self._swap_path):
             os.makedirs(self._swap_path)
         
-        if array != None:
-            self.total = numpy.array(array, dtype = 'float32')
+        if not array is None:
+            self.total = numpy.array(array, dtype = dtype)
             
-        elif (shape != None) & (dtype != None):
-            self._my_dtype = numpy.dtype(dtype)
+        elif not (shape is None):
             self._my_shape = shape 
         
     def __del__(self):
@@ -476,6 +452,19 @@ class data_blocks_swap(data_blocks):
                 
             except:
                 print('Failed to remove swap files at: ' + path_files)            
+
+    def change_block_size(self, block_sizeGB):
+        """
+        Change the block size and update the current block.
+        """
+        self.finalize_buffer()
+        
+        self._block_sizeGB = block_sizeGB
+        
+        self._buffer = []
+        self._buffer_key = -1 
+        
+        gc.collect()
                                 
     def finalize_buffer_slice(self):
         """
@@ -499,12 +488,10 @@ class data_blocks_swap(data_blocks):
             if not os.path.exists(self._swap_path):
                 os.makedirs(self._swap_path)
                 
-            start, stop = self._get_index(self._buffer_key)
+            self._update_index(self._buffer_key)
             
-            #print('writing data from:', start, stop )
-            
-            for ii in range(start, stop):
-                self._write_swap(ii, self._get_dim_data(self._buffer, self._dim, [ii - start]))
+            for ii in range(self._index[0], self._index[-1] + 1):
+                self._write_swap(ii, self._get_dim_data(self._buffer, self._dim, [ii - self._index[0]]))
                 
             self._buffer_updated = False
         
@@ -524,7 +511,11 @@ class data_blocks_swap(data_blocks):
         self.finalize_buffer_slice()
         
         # Check if we have the slice in the current block buffer:        
-        start, stop = self._get_index(self._buffer_key)
+        self._update_index(self._buffer_key)
+        
+        # Range:
+        start = self._index[0]
+        stop = self._index[-1] + 1
         
         if (key >= start) & (key < stop):
             # Use existing block:
@@ -551,7 +542,7 @@ class data_blocks_swap(data_blocks):
         self._buffer_slice_updated = True
         
         # Are we in the right block? .... write to the block
-        start, stop = self._get_index(self._buffer_key)
+        start, stop = self._update_index(self._buffer_key)
                 
         if (key >= start) & (key < stop):            
             # Use existing block:
@@ -596,8 +587,7 @@ class data_blocks_swap(data_blocks):
             # If random iterator is off, use the buffer:
             if self._buffer_key < (self.block_number - 1):
                 
-                self._buffer_key += 1
-                block = self[self._buffer_key]
+                block = self[self._buffer_key + 1]
     
             else:     
                 # End loop, update block:
@@ -616,9 +606,9 @@ class data_blocks_swap(data_blocks):
         
         # If it is a current buffer:
         if self._buffer_key == key:    
-            print('get item(old)', self._buffer_key, self._buffer.shape)   
+            #print('get item(old)', self._buffer_key, self._buffer.shape)   
             return self._buffer
-            
+        
         # Write swap on disk if it was updated...
         self.finalize_buffer_slice()
         self.finalize_buffer()
@@ -626,19 +616,23 @@ class data_blocks_swap(data_blocks):
         # Read new swap:
         self._update_index(key)
         
+        #print('get item(new)', key, self._buffer.shape)               
+        
         # initialize buffer
         self._buffer = self.empty_block()
 
+        #print('reading swap for the following keys:', self._index)
+        
         # Read from swap:        
         for ii in self._index:
+            
+            # Should it be replaced with set_slice?
+            
             # Set data:
-            self._set_dim_data(self._buffer, self._dim, key, self._read_swap(ii))    
-                        
+            self._set_dim_data(self._buffer, self._dim, ii - self._index[0], self._read_swap(ii))    
+        
         self._buffer_key = key
         
-        print('get item(new)', self._buffer_key, self._buffer.shape)   
-        
-             
         return self._buffer
         
     def __setitem__(self, key, data):    
@@ -658,7 +652,13 @@ class data_blocks_swap(data_blocks):
         # Update RAM buffer:
         self._buffer = data    
         self._buffer_updated = True
-        self._buffer_key = key     
+        
+        #print('Block %u set to ' %key, data.shape)
+        
+        # Update buffer_key and index:
+        self._update_index(key)
+        self._buffer_key = key
+                  
         #print('set item', self._buffer_key)         
         
         # Update dtype:
@@ -678,11 +678,11 @@ class data_blocks_swap(data_blocks):
         
         for jj in range(self.block_number):
             
-            # block index limits:
-            self._update_index(jj)
+            # Never call update index before get_item!
+            data = self[jj]
             
             # write block:
-            self._set_dim_data(array, self._dim, slice(self.index[0], self.index[-1] + 1), self[jj])      
+            self._set_dim_data(array, self._dim, slice(self._index[0], self._index[-1] + 1), data)      
         
         return array 
         
@@ -700,8 +700,10 @@ class data_blocks_swap(data_blocks):
             # block index limits:
             self._update_index(jj)
             
+            block = self._get_dim_data(array, self._dim, slice(self._index[0], self._index[-1] + 1))          
+            
             # write block:
-            self[jj] = self._get_dim_data(array, self._dim, slice(self.index[0], self.index[-1] + 1))          
+            self[jj] = block
     
     def init_shape(self, shape):
         """
@@ -1100,6 +1102,9 @@ class io(misc.subclass):
         records['src_vrt'] -= 5
         vol_center = (records['det_vrt'] + records['src_vrt']) / 2
         records['vol_z_tra'] = vol_center
+
+        # Rotation axis:
+        records['axs_hrz'] += 0.5
         
         # Compute the center of the detector:
         roi = numpy.int32(records.get('roi').split(sep=','))
@@ -1109,12 +1114,16 @@ class io(misc.subclass):
         records['det_vrt'] += centre[1] / records.get('binning')
         records['det_hrz'] += centre[0] / records.get('binning')
             
-        meta.geometry.det_trans[1] = records['det_vrt']
-        meta.geometry.det_trans[0] = records['det_hrz']
-        meta.geometry.src_trans[1] = records['src_vrt']
-        meta.geometry.src_trans[0] = records['src_hrz']
-        meta.geometry.axs_trans[0] = records['axs_hrz']
-        meta.geometry.vol_trans[2] = records['vol_z_tra']
+        try:
+            meta.geometry.det_trans[1] = records['det_vrt']
+            meta.geometry.det_trans[0] = records['det_hrz']
+            meta.geometry.src_trans[1] = records['src_vrt']
+            meta.geometry.src_trans[0] = records['src_hrz']
+            meta.geometry.axs_trans[0] = records['axs_hrz']
+            meta.geometry.vol_trans[1] = records['vol_z_tra']
+
+        except:
+            print('Error parsing the motor positions!')
                               
     def parse_flexray(self, path):
         """

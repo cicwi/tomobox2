@@ -115,7 +115,7 @@ class geometry(misc.subclass):
         Print a report of the geometry.
         '''
         reports.report_geometry(self)
-        
+                      
     # Set/Get methods (very bodring part of code but, hopefully, it will make geometry look prettier from outside):              
     @property
     def src2obj(self):
@@ -178,7 +178,7 @@ class geometry(misc.subclass):
         '''
         Backprojection pixel size taking into account magnification.
         '''
-        return [self._det_pixel[0] / self.magnification, self._det_pixel[1] / self.magnification]  
+        return [self._det_pixel[1] / self.magnification, self._det_pixel[1] / self.magnification, self._det_pixel[0] / self.magnification]  
         
     @img_pixel.setter
     def img_pixel(self, img_pixel):
@@ -208,7 +208,7 @@ class geometry(misc.subclass):
             self._parent.warning('No raw data in the pipeline. The detector size is not known.')
         else:
             return self._det_pixel * self._parent.data.slice_shape
-        
+                
     @property
     def thetas(self):
         '''
@@ -278,7 +278,7 @@ class geometry(misc.subclass):
             self._thetas = numpy.linspace(self._thetas[0], self._thetas[-1], theta_n)
         else:    
             self._thetas = numpy.linspace(theta_range[0], theta_range[1], theta_n)    
-    
+            
     def get_astra_vector(self, blocks = False):
         """
         Generate the vector that describes positions of the source and detector. + Returns the corrsponding projection geometry.
@@ -308,17 +308,71 @@ class geometry(misc.subclass):
         vect, geom = self.get_astra_vector(blocks)
         
         return geom
-    
+   
+# **************************************************************
+#           VOLUME_GEOMETRY class
+# **************************************************************        
 class vol_geometry(misc.subclass):
     """
     A separate compact class to describe volume geometry.
     """
-    vol_trans = [0, 0, 0]     # not per projection
-    vol_rot = [0, 0, 0]       # not per projecrion
+    _vol_trans = [0, 0, 0]     # not per projection
+    _vol_rot = [0, 0, 0]       # not per projecrion
     
-    vol_size = [0, 0, 0]      # volume size in pixels
-    voxel_size = [0, 0, 0]    # voxel size in mm
+    _img_pixel = [0, 0, 0]     # voxel size in mm
     
+    def __init__(self, parent):
+        
+        misc.subclass.__init__(self, parent)
+        
+    @property
+    def vol_shape(self):
+        '''
+        Get the total volume shape in pixels
+        '''
+        if self._parent.data is None:
+            self._parent.warning('Volume data is not initialized. The volume shape is [0, 0, 0].')
+            return numpy.zeros(3)
+            
+        else:
+            return self._parent.data.shape
+        
+    @property
+    def vol_size(self):
+        '''
+        Get the total volume size in mm
+        '''
+        
+        shape = self.vol_shape
+        
+        return self.img_pixel * shape
+            
+    @property
+    def img_pixel(self):
+        '''
+        Voxel size in mm.
+        '''
+        return numpy.array(self._img_pixel)
+        
+    @img_pixel.setter    
+    def img_pixel(self, img_pixel):
+        '''
+        Voxel size in mm.
+        '''        
+        self._img_pixel = img_pixel
+                
+    def rotate(self, euler):
+        """
+        Rotate the system of coordinates of the reconstruction volume using Euler angles
+        """
+        self._vol_rot += euler
+    
+    def translate(self, vector):
+        """
+        Translate the system of coordinates of the reconstruction volume by a vector
+        """
+        self._vol_trans += vector
+        
     def modify_proj_geom(self, proj_geom, blocks = False):
         '''
         Use this to apply rotation and translation of the volume to the projection geometry that describes projection data.
@@ -369,8 +423,10 @@ class vol_geometry(misc.subclass):
         '''
         Initialize volume geometry.        
         '''
-        size = self.vol_size
-        size_mm = size * self.voxel_size
+        
+        # Shape and size (mm) of the volume
+        shape = self.vol_shape
+        size = shape * self.img_pixel
         
         if blocks:
             # Generate volume geometry for one chunk of data:
@@ -383,18 +439,21 @@ class vol_geometry(misc.subclass):
             centre = (length - 1) / 2
             offset = (start + stop) / 2 - centre
             
-            size[1] = (stop - start + 1) 
-            size_mm = size * self.voxel_size
+            shape[1] = (stop - start + 1) 
+            size = shape * self.img_pixel
         
         else:
             offset = 0
             
-        vol_geom = astra.create_vol_geom(size[1], size[0], size[2], 
-                  -size_mm[0]/2 + offset, size_mm[0]/2, -size_mm[1]/2, size_mm[1]/2 + offset, 
-                  size_mm[2]/2, size_mm[2]/2)
+        vol_geom = astra.create_vol_geom(shape[1], shape[0], shape[2], 
+                  -size[0]/2 + offset, size[0]/2+ offset, -size[1]/2, size[1]/2, 
+                  -size[2]/2, size[2]/2)
             
         return vol_geom
     
+# **************************************************************
+#           FLEX_GEOMETRY class
+# **************************************************************          
 class flex_geometry(geometry):
     """
     This class describes the circular geometry in the Flexray scanner, 
@@ -509,13 +568,28 @@ class flex_geometry(geometry):
         vrt = abs(det_vrt * self.src2obj + src_vrt * self.det2obj) / self.src2det - self.vol_trans[1] / unt[1]
         
         return [hrz, vrt]
-    
+
+    def get_pixel_coords(self):
+        '''
+        Generate pixel coordinates of the current tile
+        '''
+        x0 = self.det_trans[0]
+        y0 = self.det_trans[1]
+
+        sz_x = self.det_size[1]
+        sz_y = self.det_size[0]
+
+        xx = numpy.linspace(0, sz_x, self.det_shape[1]) + x0
+        yy = numpy.linspace(0, sz_y, self.det_shape[1]) + y0
+                            
+        return xx, yy
+        
     @staticmethod
     def _per_projection(vector, index):
         """
         If vector is 1D - return vector, if it is given for every theta - return one that has the index = index.
         """
-        if vector.ndim < 2:
+        if numpy.ndim(vector) < 2:
             return vector
         else:
             return vector[:, index]
@@ -531,7 +605,7 @@ class flex_geometry(geometry):
         det_shape = geometry.det_shape
         
         det_axis_vrt = vectors[:, 9:12] * det_shape[0] / 2 
-        det_axis_hrz = vectors[:, 6:9] * det_size[1] / 2
+        det_axis_hrz = vectors[:, 6:9] * det_shape[1] / 2
        
         det_top = det_centre + det_axis_vrt
         det_bottom = det_centre - det_axis_vrt
@@ -565,12 +639,12 @@ class flex_geometry(geometry):
         print(src)
         print(lr[0])      
   
-    def get_astra_vector(self):
+    def get_astra_vector(self, blocks):
         """
         Generate the vector that describes positions of the source and detector.
         """
         # Call parent method
-        vectors, proj_geom = geometry.get_astra_vector(self)
+        vectors, proj_geom = geometry.get_astra_vector(self, blocks)
         
         # Modify vector and apply it to astra projection geometry:
         for ii in range(0, vectors.shape[0]):
@@ -620,7 +694,7 @@ class flex_geometry(geometry):
         
             # Global transformation:
             # Rotation matrix based on Euler angles:
-            R = transforms3d.euler.euler2mat(self.vol_rot, 'szxy')
+            R = transforms3d.euler.euler2mat(self.vol_rot[0], self.vol_rot[1], self.vol_rot[2], 'szxy')
     
             # Apply transformation:
             det_axis_hrz[:] = numpy.dot(R, det_axis_hrz)
@@ -658,6 +732,7 @@ class proj_meta(misc.subclass):
         misc.subclass.__init__(self, parent)
         
         self.geometry = flex_geometry(parent)
+        #self.geometry = geometry(parent)
         
     physics = {'voltage': 0, 'current':0, 'exposure': 0}
     lyrics = {}
@@ -669,14 +744,7 @@ class vol_meta(misc.subclass):
     '''
     This object contains properties of the volume system and the history of pre-processing.
     '''
-    history = history()
-    
-    size = None
-    size_mm = None
-    
-    offset = None
-    rotation = None
-    
+    history = history()  
     geometry = None
     
     def __init__(self, parent):
