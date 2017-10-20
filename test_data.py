@@ -18,10 +18,10 @@ Related classes are:
 import data
 import numpy
 
-db = data.data_blocks(numpy.zeros([2000,500,1000]), block_sizeGB = 1)
-db.dim = 0
+db = data.data_array(shape = [1000, 1000, 1000], dim = 0, swap = True)
 
 print('GB', db.sizeGB)
+
 print(db.block_number)
 print(db.slice_shape)
 print(db.block_shape)

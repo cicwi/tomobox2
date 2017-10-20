@@ -15,411 +15,83 @@ import os                  # file-name routines
 import re                  # used in read_image_stack
 from stat import ST_CTIME  # used in sort_by_date
 
+import random
 import misc
 
-# **************************************************************
-#           DATA_BLOCKS class
-# **************************************************************
-class data_blocks(object):
+class ram_data_pool(object):
     """
-    This will be a generic data array stored in RAM. Other types of arrays
-    will be inherited from it (GPU, SSD etc.).
-    
-    User can get a block of data from the data_blocks by iterating it. 
-    Or use 'total' property to set/get all data at once.
+    Data located in RAM memory
     """
-    # Da data, in RAM version of data_blocks, _buffer contains the entire data:
-    _buffer = []
-    _buffer_key = None
-
-    # Block index (in slice numbers):
-    _index = []
-   
-    # Maximum block size in GB. 
-    _block_sizeGB = 1
-    
-    # Dimension of access (dim = 1 for ASTRA projections, dim = 0 for volume slices) 
+    _data = None
     _dim = 0
     
-    # Random block iterator for stochastic methods
-    random_iterator = False
-    
-    
-    def __init__(self, array = [], dtype = 'float32', block_sizeGB = 4, dim = 1):
-             
-        self.total = numpy.array(array, dtype = dtype)
+    def __init__(self, dim):
         
         self._dim = dim
-        self._block_sizeGB = block_sizeGB
         
-        print('Hello data_blocks!')
+    def __del__(self):            
         
-    def __del__(self): 
-        
-        self._buffer = []
+        self._data = None
         gc.collect()
         
-        print('Bye bye data_blocks!')
+    def write(self, key, image):        
+        misc._set_dim_data(self._data, self._dim, key, image)
         
-    def change_block_size(self, block_sizeGB):
-        """
-        Change the block size and update the current block.
-        """
-        self._block_sizeGB = block_sizeGB
-                            
-    @staticmethod   
-    def _set_dim_data(data, dim, key, image):    
-        """
-        Sets a slice of data along a particular dimension:
-        """
-        if dim == 0:        
-            data[key, :, :] = image
-
-        elif dim == 1:
-             data[:, key, :] = image
-
-        else:
-            data[:, :, key] = image
-        
-    @staticmethod    
-    def _get_dim_data(data, dim, key):
-        """
-        Gets a slice of data along a particular dimension:
-        """
-        if dim == 0:        
-            return data[key, :, :] 
-
-        elif dim == 1:
-            return data[:, key, :]
-
-        else:
-            return data[:, :, key]
-    
-    def __iter__(self):
-        """
-        Return itarator for the array.
-        """
-        # Reset the counter:
-        self._buffer_key = -1
-        self._index = []
-                
-        return self
-                
-    def _update_index(self, key):
-        """
-        Translate key into array index depending on the current block number.
-        """
-        block_step = int(numpy.ceil(self.length / self.block_number))
-        
-        start = key * block_step
-        stop = (key + 1) * block_step
-        
-        # Check if we are still inside the array:
-        if start >= self.length:
-            raise IndexError('Block array is out of range.')
-            
-        stop = min((stop, self.length)) 
-        
-        self._index = numpy.arange(start, stop)
-        
-        return start, stop
-        
-    def empty_block(self, val = 0):
-        """
-        Make a block of zeroes.
-        """
-        shp = self.block_shape   
-           
-        if val == 0:
-            return numpy.zeros(shp, dtype = numpy.float32)    
-        else:
-            return numpy.ones(shp, dtype = numpy.float32) * val    
-        
-    def empty_slice(self, val = 0):
-        """
-        Make a slice of zeroes.
-        """
-        sz = self.slice_shape
-        
-        if val == 0:
-            return numpy.zeros(sz, dtype = numpy.float32)
-        else:
-            return numpy.ones(sz, dtype = numpy.float32) * val
-
-    def get_slice(self, key, dim = None):
-        """
-        Get one slice.
-        """        
-        if dim is None:
-            dim = self._dim
-        
-        if dim == 0:        
-            return self._buffer[key, :, :] 
-
-        elif dim == 1:
-             return self._buffer[:, key, :] 
-
-        else:
-            return self._buffer[:, :, key] 
-
-    def set_slice(self, key, image):
-        """
-        Set one slice.
-        """
-       
-        if self._dim == 0:        
-            self._buffer[key, :, :] = image
-        elif self._dim == 1:
-             self._buffer[:, key, :] = image
-        else:
-            self._buffer[:, :, key] = image
-
-    def __getitem__(self, key):
-        """
-        Get block of data.
-        """
-        self._update_index(key)    
-        data = self._get_dim_data(self._buffer, self._dim, slice(self._index[0], self._index[-1] + 1))
-        
-        self._buffer_key = key
-        
-        return numpy.ascontiguousarray(data)      
-        
-    def __setitem__(self, key, data):    
-        """
-        Set block of data.
-        """
-        self._update_index(key)   
-        
-        self._set_dim_data(self._buffer, self._dim, slice(self._index[0], self._index[-1] + 1), data)      
-        
-        self._buffer_key = key
-        
-    def get_random_block(self):
-        """
-        Generate a block using random sampling
-        """
-        # Total index:
-        index = numpy.arange(self.length)
-        
-        # Create block:
-        block = self.empty_block()
-        block_len = self.block_shape[self.dim]
-        
-        self._index = numpy.zeors(block_len)
-        
-        for ii in range(block_len):
-            
-            # Chose a random key:
-            rand_index = numpy.random.randint(0, index.length)
-            
-            # Index of the slice to upload:
-            key = index[rand_index]
-            
-            # Read image and add it to the block:
-            self._set_dim_data(block, self._dim, ii, self.get_slice(key))  
-            
-            # This makes sure that indexes will not be sampled twice in one block
-            index = numpy.delete(index, rand_index)
-            
-            # Add this key to my current indexes (used to generate thetas).
-            self._index[ii] = key
-            
-        return numpy.ascontiguousarray(block)    
-        
-    def __len__(self):
-        """
-        Number of blocks.
-        """
-        return self.block_number
-
-    def __next__(self):
-        """
-        Retrun next block of data.
-        """
-        if self.random_iterator:
-            
-            # Create block useing random sampling:
-            return self.get_random_block()
-        
-        else:
-            if self._buffer_key < (self.block_number - 1):
-                
-                block = self[self._buffer_key + 1]
-    
-            else:     
-                # End loop, update block:
-                raise StopIteration
-                        
-            return block 
-    
-    def block_xyz(self):
-        """
-        Return current block indexes. Can be used to create a meshgrid for instance.
-        """
-        # Current block:
-        shp = self.block_shape
-        
-        x = numpy.arange(0, shp[0])
-        y = numpy.arange(0, shp[1])
-        z = numpy.arange(0, shp[2])
-
-        if self._dim == 0:
-            x += self._index[0]
-        elif self._dim == 1:
-            y += self._index[0]
-        else:
-            z += self._index[0]        
-
-        return [x,y,z]
+    def read(self, key):
+        return misc._get_dim_data(self._data, self._dim, key)
     
     @property    
     def total(self):
-        """
-        Get all data.
-        """
-        return numpy.ascontiguousarray(self._buffer)
+        return self._data
         
-    @total.setter
-    def total(self, array):
-        """
-        Set all data. 
-        """ 
-        #print('Setting array:', array.shape)
-        self._buffer = array   
+    @total.setter    
+    def total(self, total):
+        self._data = total   
         
     @property
-    def shape(self):
-        """
-        Dimensions of the array.
-        """
-        return numpy.array(self._buffer.shape) 
-    
-    @property
-    def slice_shape(self):
-        """
-        Dimensions of a single slice:
-        """
-        
-        shp = self.shape
-        
-        index = numpy.arange(3)
-        index = index[index != self._dim]
-        
-        return shp[index]
-    
-    @property    
-    def block_shape(self):
-        """
-        Shape of the block. It might overestimate the shape of the last block, be careful!
-        """
-        sz = self.shape
-        
-        if sz.size > 0:
-            
-            # Use actual index to take into account that the last block can be shorter 
-            sz[self._dim] = self._index.size
-
-        else:
-            raise ValueError('Data shape was not initialized yet!')
-           
-        return sz
-           
-    @property
-    def length(self):
-        """
-        Length of the array along the blocking direction.
-        """
-        return self.shape[self._dim]  
-
-    @property
-    def block_number(self):
-        """
-        Number of blocks.
-        """
-        return int(1 + self.sizeGB / self._block_sizeGB)
-        
-    @property
-    def size(self):
-        """
-        Number of elements of the array.
-        """
-        return self.shape.prod()
+    def shape(self):    
+        return numpy.array(self._data.shape)
         
     @property
     def dtype(self):
-        """
-        Data type of the array.
-        """
-        return self._buffer.dtype
-        
-    @property
-    def sizeGB(self):
-        """
-        Size of the array in Gigabytes
-        """
-        return self.size / 1073741824 * self.dtype.itemsize    
- 
-# **************************************************************
-#           data_blocks_swap class
-# **************************************************************
-class data_blocks_swap(data_blocks):
+        return numpy.dtype(self._data.dtype)    
+    
+class swap_data_pool(object):
     """
-    This class doesn't keep data in RAM memory. It has a swap storage on SSD disk 
-    and keeps only one block of data in the RAM buffer.
-    
-    At the moment there are two types of access: 
-        1. read/write access to block
-        2. read/write access to a slice
-    """
-    # Block buffer and it's current key:
-    _buffer = []
-    _buffer_key = None
-    _buffer_updated = False
-    
-    # Remeber the shape of the total data on disk:
-    _my_shape = []
-    _my_dtype = None
-    
-    # Additional buffer for the slice image:
-    _buffer_slice = []
-    _buffer_slice_key = None
-    _buffer_slice_updated = False
-    
-    # SSD swap:
+    Data lockated on disk
+    """    
+    # Swap path:
     _swap_path = ''
     _swap_name = 'swap'
     
-    def __init__(self, array = None, shape = None, dtype = 'float32', block_sizeGB = 1, dim = 1, swap_path = ''):
+    _dim = 0
+    _shape = None
+    _dtype = 'float32'
+    
+    def __init__(self, swap_path, swap_name, dim, shape = None, dtype = 'float32'):
+        '''
         
-        self._dim = dim
-        self._block_sizeGB = block_sizeGB
-        
+        '''
         self._swap_path = swap_path
-        
-        self._my_dtype = numpy.dtype(dtype)
+        self._swap_name = swap_name        
         
         if not os.path.exists(self._swap_path):
             os.makedirs(self._swap_path)
-        
-        if not array is None:
-            self.total = numpy.array(array, dtype = dtype)
             
-        elif not (shape is None):
-            self._my_shape = shape 
+        self._dim = dim
+        self._shape = shape
+        self._dtype = dtype 
+            
+    def __del__(self):        
         
-    def __del__(self):
-        
-        # Double check that the last buffer was written on disk:
-        self.finalize_buffer_slice()  
-        self.finalize_buffer()  
-        
-        # Free memory:
-        self._buffer = []
-        gc.collect()
-        
-        # Free SSD:
+        # Free swap:
         self._remove_swap()
+        
+    def write(self, key, image):
+        self._write_swap(key, image)
+        
+    def read(self, key):
+        return self._read_swap(key)
         
     def _read_swap(self, key):
         """
@@ -453,47 +125,201 @@ class data_blocks_swap(data_blocks):
             except:
                 print('Failed to remove swap files at: ' + path_files)            
 
+    @property    
+    def total(self):
+        
+        if self._shape is None:
+            raise ValueError('Swap data pool shape is not known! Can initialize total data.')
+            
+        array = numpy.zeros(self._shape)
+        
+        for ii in range(self._shape[self._dim]):
+            misc._set_dim_data(array, self._dim, ii, self._read_swap(ii))
+            
+        return array
+        
+    @total.setter    
+    def total(self, array):
+        
+        self._shape = array.shape
+        
+        for ii in range(self._shape[self._dim]):
+            image = misc._get_dim_data(array, self._dim, ii)
+            
+            self._write_swap(ii, image)
+            
+    @property
+    def shape(self):    
+        return numpy.array(self._shape)
+        
+    @property
+    def dtype(self):
+        return self._dtype            
+            
+# **************************************************************
+#           DATA_BLOCKS class
+# **************************************************************
+class data_array(object):
+    """
+    This is a data array that contains information about the data and can set/get
+    data in blocks or slices. It will request data from either the ram_data_pool
+    or swap_data_pool.
+    """    
+    # Block buffer and it's current key:
+    _block = []
+    _block_key = -1
+    _block_updated = False
+    
+    # Additional buffer for the slice image:
+    _slice = []
+    _slice_key = -1
+    _slice_updated = False
+    
+    # Global index from 0 to theta_n - 1
+    _global_index = []
+   
+    # Maximum block size in GB. 
+    _block_sizeGB = 1
+        
+    # Where do we get the data from?
+    _data_pool = None
+    
+    # Indexer, can be 'sequential', 'random', 'equidistant':
+    _indexer = 'sequential'    
+        
+    
+    def __init__(self, array = None, shape = None, dtype = 'float32', block_sizeGB = 1, dim = 1, swap = False):
+        
+        # initialize the data pool:
+        if swap:
+            self._data_pool = swap_data_pool('/export/scratch3/kostenko/Fast_Data/swap', 'swap', dim)
+        else:
+            self._data_pool = ram_data_pool(dim)
+                        
+        self._block_sizeGB = block_sizeGB
+                        
+        if array is not None:
+            self._data_pool.total = numpy.array(array, dtype = dtype)            
+            
+        elif shape is not None:
+            self._data_pool.total = numpy.zeros(shape, dtype = dtype)            
+                    
+    def __del__(self):
+        
+        # Double check that the last buffer was written on disk:
+            
+        self.finalize_slice()  
+        self.finalize_block()  
+        
+        # Free memory:
+        self._block = []
+        self._slice = []
+        gc.collect()
+        
+    def switch_to_ram(self, keep_data = True):
+        """
+        Switches data to a RAM based array.
+        """
+        
+        if isinstance(self._data_pool, ram_data_pool):            
+            # Already in RAM
+            return 
+            
+        # Keep old dimension
+        dim = self._data_pool._dim    
+
+        new_pool = ram_data_pool(dim)
+        
+        if keep_data:            
+            # First copy the data:
+            new_pool.total = self._data_pool.total
+                
+        self._data_pool = new_pool          
+        
+        # Clean up!
+        gc.collect()
+
+        print('Switched data pool to RAM')
+    
+    def switch_to_swap(self, keep_data = False, swap_path = '/export/scratch3/kostenko/Fast_Data/swap', swap_name = 'swap'):
+        """
+        Switches data to an SSD based array.
+        """
+        #(swap_path, swap_name, dim, shape = None, dtype = 'float32'):
+
+        # Swap path can be different
+                        
+        if keep_data:
+            # First copy the data:
+            shape = self._data_pool.shape
+            dtype = self._data_pool.dtype   
+            
+            total = self._data_pool.total
+            
+            self._data_pool = swap_data_pool(swap_path, swap_name, shape, dtype)
+            self._data_pool.total = total
+                        
+        else:
+            # Create new:
+            self._data_pool = swap_data_pool(swap_path, swap_name)
+            
+        # Clean up!
+        gc.collect()
+        
+        print('Switched data pool to swap')        
+              
+    @property    
+    def block_key(self):
+        return self._block_key
+        
+    @block_key.setter
+    def block_key(self, key):
+        """
+        Set a new buffer key.
+        """
+        if self._block_key != key:
+            
+            # Write buffer on disk if needed:
+            self.finalize_slice()
+            self.finalize_block()
+            
+            # Update indexing:
+            self._block_key = key
+            
     def change_block_size(self, block_sizeGB):
         """
         Change the block size and update the current block.
-        """
-        self.finalize_buffer()
-        
+        """       
+        self.block_key = -1 
+        self._block = []
+
         self._block_sizeGB = block_sizeGB
-        
-        self._buffer = []
-        self._buffer_key = -1 
         
         gc.collect()
                                 
-    def finalize_buffer_slice(self):
+    def finalize_slice(self):
         """
         If buffer was modified - update file on disk.
         """
-        if self._buffer_slice_updated:
+        if (self._slice_updated) & (self._slice_key >= 0):
             
-            self._write_swap(self._buffer_slice_key, self._buffer_slice)
-            self._buffer_slice_updated = False
-        
-    def finalize_buffer(self):
+            print(self._slice_updated)
+            print(self._slice_key)
+            print(self._slice.shape)
+            
+            self._data_pool.write(self._slice_key, self._slice)
+            self._slice_updated = False
+
+    def finalize_block(self):
         """
-        If buffer (block) was modified - update files on disk.
-        
-        Attr:
-            key: move to htat key after writing last one on disk.
+        If buffer (block) was modified - update data_pool.
         """        
-        if self._buffer_updated:
+        if self._block_updated & self._block_key >= 0:
             
-            # Check if swappin path exists:
-            if not os.path.exists(self._swap_path):
-                os.makedirs(self._swap_path)
-                
-            self._update_index(self._buffer_key)
-            
-            for ii in range(self._index[0], self._index[-1] + 1):
-                self._write_swap(ii, self._get_dim_data(self._buffer, self._dim, [ii - self._index[0]]))
-                
-            self._buffer_updated = False
+            for ii, index in enumerate(self.block_index):
+                self._data_pool.write(index, misc._get_dim_data(self._block, self.dim, ii))
+                                
+            self._block_updated = False
         
     def get_slice(self, key, dim = None):
         """
@@ -501,75 +327,73 @@ class data_blocks_swap(data_blocks):
         """  
         
         if not dim is None:
-            if dim != self._dim: raise Exception('data_blocks_swap can only retrieve slices along its main dimension.')
+            if dim != self.dim: raise Exception('data_blocks_swap can only retrieve slices along its main dimension.')
                                    
         # Do we have a buffer of that slice?
-        if key == self._buffer_slice_key:
-            return self._buffer_slice
+        if key == self._slice_key:
+            return self._slice
         
         # Write swap on disk if it was updated...
-        self.finalize_buffer_slice()
+        self.finalize_slice()
         
-        # Check if we have the slice in the current block buffer:        
-        self._update_index(self._buffer_key)
-        
-        # Range:
-        start = self._index[0]
-        stop = self._index[-1] + 1
-        
-        if (key >= start) & (key < stop):
+        # Check if we have the slice in the current block buffer:
+        block_index = self.block_index        
+
+        if key in block_index:
             # Use existing block:
-            return self._get_dim_data(self._buffer, self._dim, key - start)
+            img = misc._get_dim_data(self._block, self.dim, numpy.where(block_index == key))
+            
+            print(block_index)
+            print(key)
+            print(numpy.where(block_index == key))
+            
+            #print('+++', img.shape)    
+                
+            return img
+            
+        else:
         
-        # Upload data from disk if no buffer availbale:
-        self._buffer_slice = self._read_swap(key)
-        
-        # Update index key:
-        self._buffer_slice_key = key     
-        
-        return self._buffer_slice
+            # Upload data from disk if no buffer availbale:
+            self._slice = self._data_pool.read(key)
+            #print('***', self._slice.shape)
+            # Update index key:
+            self._slice_key = key     
+            
+            return self._slice
                             
     def set_slice(self, key, image):
         """
         Set one slice.
-        """        
+        """   
+        if image.ndim > 3:
+            print(image.shape)
+            
         # Do we have a buffer of that slice?
-        if (key != self._buffer_slice_key) | (key == (self.length - 1)):
-            self.finalize_buffer_slice()
+        if (key != self._slice_key) | (key == (self.length - 1)):
+            self.finalize_slice()
         
         # Write to buffer:    
-        self._buffer_slice = image
-        self._buffer_slice_updated = True
+        self._slice = image
+        self._slice_updated = True
         
         # Are we in the right block? .... write to the block
-        start, stop = self._update_index(self._buffer_key)
-                
-        if (key >= start) & (key < stop):            
+        
+        block_index = self.block_index
+        
+        if (key in block_index):
             # Use existing block:
-            self._set_dim_data(self._buffer, self._dim, key - start, image)
-           
-        # Update dtype:
-        if self._my_dtype != image.dtype:
-            if self._my_dtype is None: 
-                self._my_dtype = image.dtype
-            else:
-                raise ValueError('Type of the data has changed from ' + str(self._my_dtype) + ' to ' + str(image.dtype))
-                
+            misc._set_dim_data(self._block, self.dim, numpy.where(block_index == key), image)
+                           
         # All went OK - update current key:
-        self._buffer_slice_key = key     
+        self._slice_key = key     
 
             
     def __iter__(self):
         """
         Return itarator for the array.
         """
-        
-        # Reset the buffers:
-        self.finalize_buffer_slice()
-        self.finalize_buffer()
-        
-        # Set buffer_key to -1 to make sure that the first iterator will return key = 0
-        self._buffer_key = -1     
+        # Set block_key to -1 to make sure that the first iterator will return key = 0
+        self.block_key = -1     
                 
         return self  
         
@@ -578,26 +402,16 @@ class data_blocks_swap(data_blocks):
         Retrun next block of data.
         """
         
-        if self.random_iterator:
+        if self.block_key < (self.block_number - 1):
             
-            # Create block useing random sampling:
-            return self.get_random_block()
-        
-        else:
-            # If random iterator is off, use the buffer:
-            if self._buffer_key < (self.block_number - 1):
-                
-                block = self[self._buffer_key + 1]
-    
-            else:     
-                # End loop, update block:
-                self.finalize_buffer_slice()
-                self.finalize_buffer()            
-                
-                raise StopIteration
+            return self[self.block_key + 1]
+
+        else:     
+            # End loop, update block:
+            self.finalize_slice()
+            self.finalize_block()            
             
-            #print('returning block ',    self._buffer_key)
-            return block     
+            raise StopIteration
         
     def __getitem__(self, key):
         """
@@ -605,35 +419,23 @@ class data_blocks_swap(data_blocks):
         """
         
         # If it is a current buffer:
-        if self._buffer_key == key:    
-            #print('get item(old)', self._buffer_key, self._buffer.shape)   
-            return self._buffer
+        if self._block_key == key:    
+            return self._block
+            
+        else:
+            # Update buffer key:
+            self.block_key = key
         
-        # Write swap on disk if it was updated...
-        self.finalize_buffer_slice()
-        self.finalize_buffer()
-        
-        # Read new swap:
-        self._update_index(key)
-        
-        #print('get item(new)', key, self._buffer.shape)               
-        
-        # initialize buffer
-        self._buffer = self.empty_block()
+            # initialize buffer
+            self._block = self.empty_block()
 
-        #print('reading swap for the following keys:', self._index)
-        
-        # Read from swap:        
-        for ii in self._index:
-            
-            # Should it be replaced with set_slice?
-            
-            # Set data:
-            self._set_dim_data(self._buffer, self._dim, ii - self._index[0], self._read_swap(ii))    
-        
-        self._buffer_key = key
-        
-        return self._buffer
+            # Read from swap:        
+            for ii, index in enumerate(self.block_index):
+                
+                # Set data:
+                misc._set_dim_data(self._block, self.dim, ii, self._data_pool.read(index))    
+                        
+            return self._block
         
     def __setitem__(self, key, data):    
         """
@@ -641,25 +443,11 @@ class data_blocks_swap(data_blocks):
         """     
         
         # If the block moves to a new position:    
-        if self._buffer_key != key:            
-                    
-            # Update slice buffer:
-            self.finalize_buffer_slice()
-            
-            # Update block buffer:  
-            self.finalize_buffer()    
+        self.block_key = key
                         
         # Update RAM buffer:
-        self._buffer = data    
-        self._buffer_updated = True
-        
-        #print('Block %u set to ' %key, data.shape)
-        
-        # Update buffer_key and index:
-        self._update_index(key)
-        self._buffer_key = key
-                  
-        #print('set item', self._buffer_key)         
+        self._block = data    
+        self._block_updated = True
         
         # Update dtype:
         if self._my_dtype != data.dtype:
@@ -672,59 +460,207 @@ class data_blocks_swap(data_blocks):
     def total(self):
         """
         Get all data.
-        """
-        
-        array = numpy.zeros(self.shape, dtype = self._my_dtype)
-        
-        for jj in range(self.block_number):
-            
-            # Never call update index before get_item!
-            data = self[jj]
-            
-            # write block:
-            self._set_dim_data(array, self._dim, slice(self._index[0], self._index[-1] + 1), data)      
-        
-        return array 
-        
+        """        
+        return self._data_pool.total
+                
     @total.setter
     def total(self, array):
         """
         Set all data.
         """
-        
         self._my_shape = array.shape
         self._my_dtype = array.dtype
         
-        for jj in range(self.block_number):
-            
-            # block index limits:
-            self._update_index(jj)
-            
-            block = self._get_dim_data(array, self._dim, slice(self._index[0], self._index[-1] + 1))          
-            
-            # write block:
-            self[jj] = block
-    
-    def init_shape(self, shape):
+        self._data_pool.total = array
+        
+        self._update_global_index()
+        
+    def init_total(self, shape):
         """
-        Initialize an empty SSD array of a given shape. Can now write individual blocks.
+        Initialize an empty array of a given shape. Can now write individual blocks.
         """
-        self._my_shape = shape
+        self._my_shape = shape        
+        self._update_global_index()
         
     @property
     def shape(self):
         """
         Dimensions of the array.
         """
-        return numpy.array(self._my_shape)
+        return self._data_pool.shape
+        
+    @property
+    def dim(self):
+        """
+        Main dimension of the data array
+        """
+        return self._data_pool._dim
+        
+    @dim.setter
+    def dim(self, dim):
+        """
+        Main dimension of the data array
+        """
+        self._data_pool._dim = dim
         
     @property
     def dtype(self):
         """
         Data type of the array.
         """
-        return self._my_dtype    
+        return numpy.dtype(self._data_pool.dtype)
+            
+    def _update_global_index(self):
+        '''
+        Create a global index for slices. Alowes to have everything in sequential, random or equidistant order.
+        '''
+        
+        if self._indexer == 'sequential':
+            # Index = 0, 1, 2, 4
+            self._global_index = numpy.arange(self.length)
+            
+        elif self._indexer == 'random':   
+            # Index = 2, 3, 0, 1 for instance...        
+            self._global_index = random.shuffle(numpy.arange(self.length))    
+            
+        
+        elif self._indexer == 'equidistant':   
+            # Index = 0, 2, 1, 3    
+            self._global_index = numpy.arange(self.length)
+            
+    @property    
+    def block_index(self):
+        """
+        Get slice indexes for the current buffer key
+        """
+        
+        if self._block_key < 0:
+            return numpy.array([])
 
+        block_step = int(numpy.ceil(self.length / self.block_number))
+        
+        start =  self._block_key * block_step
+        stop = ( self._block_key + 1) * block_step
+        
+        # Check if we are still inside the array:
+        if start >= self.length:
+            raise IndexError('Block array is out of range.')
+            
+        stop = min((stop, self.length)) 
+        
+        return numpy.array(self._global_index[start:stop])
+    
+                        
+    def empty_block(self, val = 0):
+        """
+        Make a block of zeroes.
+        """
+        shp = self.block_shape   
+           
+        if val == 0:
+            return numpy.zeros(shp, dtype = numpy.float32)    
+        else:
+            return numpy.ones(shp, dtype = numpy.float32) * val    
+        
+    def empty_slice(self, val = 0):
+        """
+        Make a slice of zeroes.
+        """
+        sz = self.slice_shape
+        
+        if val == 0:
+            return numpy.zeros(sz, dtype = numpy.float32)
+        else:
+            return numpy.ones(sz, dtype = numpy.float32) * val
+        
+    def __len__(self):
+        """
+        Number of blocks.
+        """
+        return self.block_number
+    
+    def block_xyz(self):
+        """
+        Return current block indexes. Can be used to create a meshgrid for instance.
+        """
+        
+        if self.block_key == -1:
+            raise ValueError('Block is undefined!')
+            
+        # Current block:
+        shp = self.block_shape
+        
+        x = numpy.arange(0, shp[0])
+        y = numpy.arange(0, shp[1])
+        z = numpy.arange(0, shp[2])
+
+        if self._data_pool._dim == 0:
+            x = self.block_index
+        elif self._data_pool._dim == 1:
+            y = self.block_index
+        else:
+            z = self.block_index
+
+        return [x,y,z]
+            
+    @property
+    def slice_shape(self):
+        """
+        Dimensions of a single slice:
+        """
+        
+        shp = self._data_pool.shape
+        
+        index = numpy.arange(3)
+        index = index[index != self._data_pool._dim]
+        
+        return shp[index]
+    
+    @property    
+    def block_shape(self):
+        """
+        Shape of the block. It might overestimate the shape of the last block, be careful!
+        """
+        sz = self._data_pool.shape
+        
+        if sz.size > 0:
+            
+            # Use actual index to take into account that the last block can be shorter 
+            sz[self._data_pool._dim] = self.block_index.size
+
+        else:
+            raise ValueError('Data shape was not initialized yet!')
+           
+        return sz
+            
+    @property
+    def length(self):
+        """
+        Length of the array along the blocking direction.
+        """
+        return self.shape[self.dim]  
+
+    @property
+    def block_number(self):
+        """
+        Number of blocks.
+        """
+        return int(1 + self.sizeGB / self._block_sizeGB)
+        
+    @property
+    def size(self):
+        """
+        Number of elements of the array.
+        """
+        return self._data_pool.shape.prod()
+                
+    @property
+    def sizeGB(self):
+        """
+        Size of the array in Gigabytes
+        """
+        return self.size / 1073741824 * self.dtype.itemsize    
+      
 # **************************************************************
 #           IO class
 # **************************************************************

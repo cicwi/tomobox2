@@ -8,6 +8,7 @@ This module contains tomographic reconstruction routines based on ASTRA.
 """
 import astra
 import data
+import misc
 
 import astra.experimental as asex
 import numpy
@@ -26,10 +27,10 @@ class reconstruct(object):
     projections = []
     volumes = []
     
-    # Options:
-    constraints = None
+    options = {'swap': False, 'constraints': None, 'poisson_stat': False, 'ramp': 0, 'weight': False}
+
+    swap_path = '/export/scratch3/kostenko/Fast_Data/swap'
         
-    
     def __init__(self, projections, volume):
         
         # Remember the projection data that we will use to reconstruct:
@@ -77,7 +78,7 @@ class reconstruct(object):
               
         return vol_data  
 
-    def backproject(self, algorithm = 'BP3D_CUDA', constraints = None):
+    def backproject(self, algorithm = 'BP3D_CUDA', multiplier = 1):
         '''
         ASTRA backprojector. No filtering by default.
         '''
@@ -105,11 +106,16 @@ class reconstruct(object):
                 proj_geom = proj.meta.geometry.get_proj_geom(blocks = True)
                 
                 # Backprojection:
-                self._backproject_block(block, proj_geom, vol_data, vol_geom, algorithm) 
+                if multiplier != 1:    
+                    self._backproject_block(multiplier * block, proj_geom, vol_data, vol_geom, algorithm) 
+                    
+                else:
+                    self._backproject_block(block, proj_geom, vol_data, vol_geom, algorithm) 
                 
             # Apply constraints:
-            if not constraints is None:
-                numpy.clip(vol_data, a_min = constraints[0], a_max = constraints[1], out = vol_data)
+            constr = self.options['constraints']
+            if constr is not None:
+                numpy.clip(vol_data, a_min = constr[0], a_max = constr[1], out = vol_data)
 
     def _forwardproject_block(self, proj_data, proj_geom, vol_data, vol_geom):
         '''
@@ -132,9 +138,9 @@ class reconstruct(object):
           
         return proj_data                  
                 
-    def forwardproject(self):
+    def forwardproject(self, multiplier = 1):
         '''
-        ASTRA forwardprojector.
+        ASTRA forwardprojector. 
         '''
         
         # Volume geometry and projection geometry for ASTRA:
@@ -145,7 +151,7 @@ class reconstruct(object):
             
             # This will only work with RAM volume data! Otherwise, need to use 'total' setter.
             if isinstance(proj.data, data.data_blocks_swap):
-                raise ValueError('Forwardprojection doesn`t support SSD data blocks for projections!')
+                raise ValueError('Forwardprojection doesn`t support swap data blocks for projections!')
             
             proj_data = proj.data.total
             
@@ -161,7 +167,11 @@ class reconstruct(object):
                 # Generate geometry for the current block:
                 vol_geom = self.volume.meta.geometry.get_vol_geom(blocks = True)
                 
-                self._forwardproject_block(proj_data, proj_geom, block, vol_geom)    
+                if multiplier != 1:    
+                    self._forwardproject_block(proj_data, proj_geom, multiplier * block, vol_geom)    
+                    
+                else:
+                    self._forwardproject_block(proj_data, proj_geom, block, vol_geom)    
         
     def FDK(self):
         '''
@@ -176,49 +186,60 @@ class reconstruct(object):
         # Update history:    
         self.volume.meta.history.add_record('Reconstruction generated using FDK.', [])
         
+    def _volume_to_swap(self):
+        '''
+        Put volume to swap and projections to RAM. Do it before forwardprojection
+        '''
+        
+        if self.options['swap']:
+            self.volume.switch_to_swap(keep_data = True, swap_path = self.swap_path)
+        
+            for proj in self.projections:
+                proj.switch_to_ram(keep_data = True)
+            
+    def _projections_to_swap(self):
+        '''
+        Put projections to swap and volume to RAM. Do it before backprojection
+        '''
+        
+        if self.options['swap']:
+            for proj in self.projections:
+                proj.switch_to_swap(keep_data = True, swap_path = self.swap_path)
+                
+            self.volume.switch_to_ram(keep_data = True)
+            
+    def _compute_forward_weight(self):
+        '''
+        Compute weights applied to the forward projection. FP(BP(ONES))
+        '''        
+        
+        
     def SIRT(self, iterations = 3):
         '''
         Simultaneous Iterative Reconstruction Technique... also known as James
-        '''
-                
-        pass
-        """
-        for ii_iter in range(iterations):
-            
-            
-            # TODO: SWAP SWAP SWAP!!!!
-            
-            fwd_proj = self._forwardproject(vol)
-
-            residual = (data - fwd_proj_vols)
-
-            if not self._projection_mask is None:
-                residual *= self._projection_mask
-            
-            vol += self._backproject(residual, algorithm='BP3D_CUDA') / weights #* bwd_weights
-            
-            if not self._reconstruction_mask is None:
-                vol = self._reconstruction_mask * vol
-            
-            # If relative_constraint is used, force values below relative threshold to 0:
-            if relative_constraint != None:
-                threshold = vol.max() * relative_constraint
-                vol[vol < threshold] = 0
-
-            # Enforce non-negativity or similar:
-            if min_constraint != None:
-                vol[vol < min_constraint] = min_constraint
-
-            vol_obj.data._data = vol    
-            
-            print('SIRT_CPU. Iteration %01d' % ii_iter)
-            print('Maximum value is:', vol.max())
-            
-            vol_obj.display.slice(fig_num= 11)
-            
-        return vol_obj
-        """
+        '''        
         
+        # Compute weights:
+        print('Computing weights...')
+        
+        # Create temporary volume of ones...
+        # Create temporary projections...
+        # Back
+        # Forward
+        # Max projections
+        
+        # Weight to be on the safe side:
+        w = self.volume.data.shape.max() 
+        
+        for ii in range(iterations):
+            # Switch data to swap if needed:
+            self._volume_to_swap()
+            self.forwardproject(multiplier = -1)
+            
+            self._projections_to_swap()
+            self.backproject(multiplier = 1 / w)
+            
+            misc.progress_bar((ii + 1) / iterations)
         
     def CPLS(self):
         '''
@@ -246,8 +267,8 @@ class reconstruct(object):
         
         print('Stitching tiles...')
         
-        pix = proj[0].meta.geometry.det_pixel
-        theta_n = proj[0].meta.geometry.theta_n
+        pix = self.projections[0].meta.geometry.det_pixel
+        theta_n = self.projections[0].meta.geometry.theta_n
         
         min_x, min_y = numpy.inf
         max_x, max_y = -numpy.inf
@@ -265,39 +286,42 @@ class reconstruct(object):
         total_shape = [(max_y - min_y) / pix[1], theta_n, (max_x - min_x) / pix[0]]     
         total_centre = [(max_y + min_y) / 2, (max_x - min_x) / 2]
 
-        print('Total dataset size is', total_slice_shape)
-        
-        total_slice_shape.append()
-        
+        print('Total dataset size is', total_shape)
+                
         # Initialize a large projection array:
-        new_data = data_blocks_swap(shape = total_shape, block_sizeGB = 1, swap_path = swap_path)            
+        new_data = data.data_blocks_swap(shape = total_shape, block_sizeGB = 1, dim = 1, swap_path = swap_path)            
         
         # Interpolate slice by slice:
         for ii in range(new_data.length): 
             
-            
             total_slice = new_data.empty_slice()
+            total_slice_size = [(max_y - min_y), (max_x - min_x)]
             
             for proj in self.projections:
                 
+                # Detector size in mm:
+                det_size = proj.meta.geometry.det_size
+                
+                # Get a tile image:
                 img = proj.data.get_slice(ii)
                 
-                pad_x = total_slice.shape[1] - img.shape[1]
-                pad_y = total_slice.shape[0] - img.shape[0]
-                
+                # Difference between total size and current tile size:
+                pad_x = total_shape[1] - img.shape[1]
+                pad_y = total_shape[0] - img.shape[0]
                 img = numpy.pad(img, ((0, pad_y), (0, pad_x)))
                 
-                proj.meta.geometry.det_trans[1] - total_centre[1]
-                offset = 
+                # Offset from the left top corner:
+                offset = (proj.meta.geometry.det_trans - total_centre) + total_slice_size / 2 - det_size / 2
                 
-                interp.shift(img, offset)
-        
-        for ii in range(new_data.block_number):
+                print('shifting by offset:', offset)
+                
+                total_slice += interp.shift(img, offset)
+                
+            new_data[ii] = total_slice 
+
+            misc.progress_bar(ii / new_data.length)
             
-        
         return new_data
-            
-    def total_shape
         
 # TODO: random access
     

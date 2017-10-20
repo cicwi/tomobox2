@@ -15,7 +15,7 @@ This module contains the Great Mighty Tomobox.
 #import astra
 import numpy
 import warnings
-import gc
+#import gc
 
 # Own modules:
 from analysis import process
@@ -24,8 +24,7 @@ from analysis import display
 from analysis import analyse
 
 from data import io        
-from data import data_blocks
-from data import data_blocks_swap
+from data import data_array
 from meta import proj_meta
 from meta import vol_meta
 
@@ -52,68 +51,13 @@ class tomographic_data(object):
     
     def __init__(self):
         # Default RAM based data array:
-        self.data = data_blocks(block_sizeGB = 1)        
+        self.data = data_array(block_sizeGB = 1)        
         
         # Common classes for the cvolume and for the projections:
         self.io = io(self)
         self.display = display(self)
         self.analyse = analyse(self)
     
-    def switch_to_ram(self, keep_data = False, block_sizeGB = None):
-        """
-        Switches data to a RAM based array.
-        """
-        
-        if not isinstance(self.data, data_blocks_swap):
-            print('I am already in RAM memory!')
-            
-            return 
-            
-        if block_sizeGB is None:
-            block_sizeGB = self.data._block_sizeGB
-
-        if keep_data:
-            
-            # First copy the data:
-            new_data = data_blocks(array = self.data.total, block_sizeGB = block_sizeGB)
-        else:
-            # Create new:
-            new_data = data_blocks(block_sizeGB = block_sizeGB)
-            
-        self.data = new_data  
-        
-        # Clean up!
-        gc.collect()
-
-        print('Switched to data_blocks_ram')
-    
-    def switch_to_swap(self, keep_data = False, block_sizeGB = None, swap_path = '/export/scratch3/kostenko/Fast_Data/swap'):
-        """
-        Switches data to an SSD based array.
-        """
-        
-        if isinstance(self.data, data_blocks_swap):
-            print('We are already swappin!')
-            return 
-            
-        if block_sizeGB is None:
-            block_sizeGB = self.data._block_sizeGB    
-            
-        if keep_data:
-            # First copy the data:
-            new_data = data_blocks_swap(array = self.data.total, block_sizeGB = block_sizeGB, dtype='float32', swap_path = swap_path)
-            
-        else:
-            # Create new:
-            new_data = data_blocks_swap(block_sizeGB = block_sizeGB, dtype='float32', swap_path = swap_path)   
-            
-        self.data = new_data  
-        
-        # Clean up!
-        gc.collect()
-        
-        print('Switched to data_blocks_swap')
-
 # **************************************************************
 #           VOLUME class
 # **************************************************************

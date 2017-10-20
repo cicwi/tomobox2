@@ -44,7 +44,7 @@ class analyse(misc.subclass):
             return vals
             
         # if dim is the same as the main dimension 
-        if dim == self._parent.data._dim:
+        if dim == self._parent.data.dim:
             
             img = self._parent.data.empty_slice()   
             
@@ -549,6 +549,8 @@ class process(misc.subclass):
         for ii in range(prnt.data.length):     
             
             img = prnt.data.get_slice(ii)
+            
+            #print('get slice', img.shape)
                         
             ref = self._parent.get_ref(proj_num = ii)
                 
@@ -565,7 +567,8 @@ class process(misc.subclass):
                 # Is dark subtracted from ref images internally?
                 ref = ref - prnt._dark
                 
-            # Use flat field:
+            # Use flat field:                
+            #print('set slice', img.shape)    
             prnt.data.set_slice(ii, img / ref)
 
             misc.progress_bar((ii+1) / prnt.data.length)
