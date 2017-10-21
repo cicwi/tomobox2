@@ -7,15 +7,21 @@ Test of the reconstructor.
 
 import tomobox
 
-proj = tomobox.projections()
-proj.switch_to_swap(block_sizeGB = 0.5)
+proj = tomobox.projections(block_sizeGB = 0.5, swap = True)
+proj.data.switch_to_swap(swap_path = 'D:/Data/swap', swap_name = 'swap')
 
 #proj.io.read_flexray('/export/scratch2/kostenko/Slow_Data/Rijksmuseum/misc/fingerprint/')
-proj.io.read_flexray('/export/scratch3/kostenko/Fast_Data/rijksmuseum/tiling/al_dummy_vertical_tile_0')
+#proj.io.read_flexray('/export/scratch3/kostenko/Fast_Data/rijksmuseum/tiling/al_dummy_vertical_tile_0')
+proj.io.read_flexray('D:/Data/al_dummy_vertical_tile_1')
 
 #%% Test process
 
 proj.process.flat_field()
+# last slice?
+
+proj.process.bin_projections()
+# we have an unfinalized slice?
+
 proj.process.log()
 
 proj.display.max_projection()
@@ -25,19 +31,12 @@ proj.display.max_projection()
 import reconstruction
 
 pix = proj.meta.geometry.img_pixel[1]
-volume = tomobox.volume([1000,1000,1000], pix)
+volume = tomobox.volume([800,800,800], pix)
 
 recon = reconstruction.reconstruct(proj, volume)
+recon.swap_path = 'D:/Data/swap'
 
-recon.FDK()
+recon.backproject()
+#recon.FDK()
 
 volume.display.slice(dim=0)
-
-
-#%%
-import matplotlib.pyplot as plt
-
-plt.figure()
-plt.imshow(vol_data[:, 500, :])
-#plt.imshow(vol_data[200, :, :])
-plt.colorbar()

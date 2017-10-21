@@ -143,10 +143,16 @@ class swap_data_pool(object):
         
         self._shape = array.shape
         
+        print('Copying data to swap...')
+        
         for ii in range(self._shape[self._dim]):
             image = misc._get_dim_data(array, self._dim, ii)
             
             self._write_swap(ii, image)
+            
+            #print('Write swap %u' % ii, image.shape)
+            
+            misc.progress_bar((ii+1) / self._shape[self._dim])
             
     @property
     def shape(self):    
@@ -207,14 +213,26 @@ class data_array(object):
     def __del__(self):
         
         # Double check that the last buffer was written on disk:
+        try:    
+            self.finalize_slice()  
+            self.finalize_block() 
             
-        self.finalize_slice()  
-        self.finalize_block()  
+        except:
+            print('Data block not finalized.')
+            
+        finally:
+            # Free memory:
+            self._block = []
+            self._slice = []
+            gc.collect()
+            
+            print('data_array deleted!')
         
-        # Free memory:
-        self._block = []
-        self._slice = []
-        gc.collect()
+    def is_swap(self):
+        """
+        Am is swap or am I ram?
+        """
+        return isinstance(self._data_pool, swap_data_pool)
         
     def switch_to_ram(self, keep_data = True):
         """
@@ -248,7 +266,9 @@ class data_array(object):
         #(swap_path, swap_name, dim, shape = None, dtype = 'float32'):
 
         # Swap path can be different
-                        
+        # Keep old dimension
+        dim = self._data_pool._dim 
+                
         if keep_data:
             # First copy the data:
             shape = self._data_pool.shape
@@ -261,7 +281,7 @@ class data_array(object):
                         
         else:
             # Create new:
-            self._data_pool = swap_data_pool(swap_path, swap_name)
+            self._data_pool = swap_data_pool(swap_path, swap_name, dim)
             
         # Clean up!
         gc.collect()
@@ -277,6 +297,9 @@ class data_array(object):
         """
         Set a new buffer key.
         """
+        if key >= self.block_number:
+            raise ValueError('Block key is out of bounds!')
+            
         if self._block_key != key:
             
             # Write buffer on disk if needed:
@@ -302,11 +325,6 @@ class data_array(object):
         If buffer was modified - update file on disk.
         """
         if (self._slice_updated) & (self._slice_key >= 0):
-            
-            print(self._slice_updated)
-            print(self._slice_key)
-            print(self._slice.shape)
-            
             self._data_pool.write(self._slice_key, self._slice)
             self._slice_updated = False
 
@@ -314,7 +332,7 @@ class data_array(object):
         """
         If buffer (block) was modified - update data_pool.
         """        
-        if self._block_updated & self._block_key >= 0:
+        if self._block_updated & self.block_key >= 0:
             
             for ii, index in enumerate(self.block_index):
                 self._data_pool.write(index, misc._get_dim_data(self._block, self.dim, ii))
@@ -341,12 +359,8 @@ class data_array(object):
 
         if key in block_index:
             # Use existing block:
-            img = misc._get_dim_data(self._block, self.dim, numpy.where(block_index == key))
-            
-            print(block_index)
-            print(key)
-            print(numpy.where(block_index == key))
-            
+            index = numpy.where(block_index == key)[0]
+            img = misc._get_dim_data(self._block, self.dim, index[0])
             #print('+++', img.shape)    
                 
             return img
@@ -365,8 +379,8 @@ class data_array(object):
         """
         Set one slice.
         """   
-        if image.ndim > 3:
-            print(image.shape)
+        if image.ndim > 2:
+            image = numpy.squeeze(image)
             
         # Do we have a buffer of that slice?
         if (key != self._slice_key) | (key == (self.length - 1)):
@@ -382,11 +396,11 @@ class data_array(object):
         
         if (key in block_index):
             # Use existing block:
-            misc._set_dim_data(self._block, self.dim, numpy.where(block_index == key), image)
+            index = numpy.where(block_index == key)[0]
+            misc._set_dim_data(self._block, self.dim, index[0], image)
                            
         # All went OK - update current key:
         self._slice_key = key     
-
             
     def __iter__(self):
         """
@@ -454,7 +468,8 @@ class data_array(object):
             if self._my_dtype is None: 
                 self._my_dtype = data.dtype
             else:
-                raise ValueError('Type of the data has changed from ' + str(self._my_dtype) + ' to ' + str(data.dtype))
+                print('Warning! Type of the data has changed from ' + str(self._my_dtype) + ' to ' + str(data.dtype))
+                self._my_dtype = data.dtype
 
     @property    
     def total(self):
@@ -471,16 +486,23 @@ class data_array(object):
         self._my_shape = array.shape
         self._my_dtype = array.dtype
         
+        # Make sure the buffers are finalized:
+        self.finalize_slice()  
+        self.finalize_block() 
+        
         self._data_pool.total = array
         
-        self._update_global_index()
+        # Update slice index:
+        self.set_indexer()
         
     def init_total(self, shape):
         """
         Initialize an empty array of a given shape. Can now write individual blocks.
         """
-        self._my_shape = shape        
-        self._update_global_index()
+        self._my_shape = shape
+        
+        # INitialize slice index:
+        self.set_indexer()
         
     @property
     def shape(self):
@@ -510,10 +532,12 @@ class data_array(object):
         """
         return numpy.dtype(self._data_pool.dtype)
             
-    def _update_global_index(self):
+    def set_indexer(self, indexer = None):
         '''
         Create a global index for slices. Alowes to have everything in sequential, random or equidistant order.
         '''
+        if indexer is not None:
+            self._indexer = indexer
         
         if self._indexer == 'sequential':
             # Index = 0, 1, 2, 4
@@ -521,13 +545,19 @@ class data_array(object):
             
         elif self._indexer == 'random':   
             # Index = 2, 3, 0, 1 for instance...        
-            self._global_index = random.shuffle(numpy.arange(self.length))    
-            
-        
-        elif self._indexer == 'equidistant':   
-            # Index = 0, 2, 1, 3    
             self._global_index = numpy.arange(self.length)
+            random.shuffle(self._global_index)    
+             
+        elif self._indexer == 'equidistant':   
+            # Index = 0, 2, 1, 3   
+            length = self.length 
+            block_step = int(numpy.ceil(length / self.block_number))
             
+            self._global_index = numpy.mod(numpy.arange(length) * block_step, length)
+            
+        else:
+            raise ValueError('Indexer type not recognized! Use: sequential/random/equidistant')
+                        
     @property    
     def block_index(self):
         """
@@ -873,7 +903,9 @@ class io(misc.subclass):
     def read_projections(self, path, filter = ''):
         '''
         Read projection data.
-        '''        
+        ''' 
+        print('Reading projections.')
+        
         data = self._read_images(path, filter)
                     
         # Transpose to satisfy ASTRA dimensions if loading projection data:    

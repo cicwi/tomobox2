@@ -18,7 +18,7 @@ Related classes are:
 import data
 import numpy
 
-db = data.data_array(shape = [1000, 1000, 1000], dim = 0, swap = True)
+db = data.data_array(shape = [1000, 1000, 1000], block_sizeGB = 0.5, dim = 0)
 
 print('GB', db.sizeGB)
 
@@ -43,8 +43,12 @@ import tomobox
 
 proj = tomobox.projections()
 
-proj.io.read_flexray('/export/scratch3/kostenko/Fast_Data/rijksmuseum/tiling/al_dummy_vertical_tile_0')
+# Work:
+#proj.io.read_flexray('/export/scratch3/kostenko/Fast_Data/rijksmuseum/tiling/al_dummy_vertical_tile_0')
 
+# Home:
+proj.io.read_flexray('D:/Data/al_dummy_vertical_tile_1')
+    
 proj.display.slice()
 proj.display.projection()
 
@@ -55,44 +59,25 @@ proj.process.residual_rings()
 proj.process.salt_pepper()
 proj.process.add_noise(1, mode = 'normal')
 
-#%% Test SSD
-
+#%% Test swap:
 import tomobox
 
-# Create data blocks and populate:
-proj = tomobox.projections()
-proj.switch_to_swap()
+proj = tomobox.projections(block_sizeGB = 0.5, swap = True)
+proj.data.switch_to_swap(swap_path = 'D:/Data/swap', swap_name = 'swap')
 
-# Create data blocks and populate block by block:
-proj.data[0] = proj.data.empty_block() + 1
-proj.data[1] = proj.data.empty_block() + 2
-proj.data[2] = proj.data.empty_block() + 3
-proj.data[3] = proj.data.empty_block() + 4
+# Work:
+#proj.io.read_flexray('/export/scratch3/kostenko/Fast_Data/rijksmuseum/tiling/al_dummy_vertical_tile_0')
 
-#%% 
-import tomobox
-
-# Create data blocks and populate:
-proj = tomobox.projections()
-proj.switch_to_swap()
-
-proj.data.total = numpy.zeros([1000,1000,1000])
-
-for ii, blk in enumerate(proj.data):
-    blk = blk + ii
-    proj.data = blk
+# Home:
+proj.io.read_flexray('D:/Data/al_dummy_vertical_tile_1')
     
+proj.display.slice()
+proj.display.projection()    
 
-#%% Test process on SSD
-import tomobox
-
-# Create data blocks and populate:
-proj = tomobox.projections()
-proj.switch_to_swap()
-proj.io.read_flexray('/export/scratch3/kostenko/Fast_Data/rijksmuseum/tiling/al_dummy_vertical_tile_0')
-
-#%%
-proj.process.flat_field()
-proj.process.log()
-proj.process.residual_rings()
+#%% Random access:
+print(proj.data.block_index)
+proj.data.set_indexer('random')
+print(proj.data.block_index)
+proj.data.set_indexer('equidistant')
+print(proj.data.block_index)
 #%% Reconstruct!

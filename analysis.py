@@ -274,6 +274,9 @@ class display(misc.subclass):
 
         img = self._parent.analyse.max(dim)
         
+        # Dont know why, but the sum turns out up side down
+        img = numpy.flipud(img)
+        
         if self._dynamic_range != []:
             plt.imshow(img, cmap = self._cmap, origin='lower', vmin = self._dynamic_range[0], vmax =self._dynamic_range[1])
         else:
@@ -290,6 +293,9 @@ class display(misc.subclass):
         self._figure_maker_(fig_num)
 
         img = self._parent.analyse.min(dim)
+        
+        # Dont know why, but the sum turns out up side down
+        img = numpy.flipud(img)
         
         if self._dynamic_range != []:
             plt.imshow(img, cmap = self._cmap, origin='lower', vmin = self._dynamic_range[0], vmax =self._dynamic_range[1])
@@ -567,8 +573,7 @@ class process(misc.subclass):
                 # Is dark subtracted from ref images internally?
                 ref = ref - prnt._dark
                 
-            # Use flat field:                
-            #print('set slice', img.shape)    
+            # Use flat field:                              
             prnt.data.set_slice(ii, img / ref)
 
             misc.progress_bar((ii+1) / prnt.data.length)
@@ -782,12 +787,10 @@ class process(misc.subclass):
         data[0:-1:2, :, :] += data[1::2, :, :]
         data = data[0:-1:2, :, :] / 2
 
-        misc.progress_bar(0.75)
+        misc.progress_bar(1)
 
         self._parent.data.total = data
         
-        misc.progress_bar(1)
-
         # Multiply the detecotr pixel width and height:
         self._parent.meta.geometry.det_pixel[0] = self._parent.meta.geometry.det_pixel[0] * 2
         self._parent.meta.geometry.det_pixel[1] = self._parent.meta.geometry.det_pixel[1] * 2

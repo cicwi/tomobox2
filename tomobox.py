@@ -30,7 +30,6 @@ from meta import vol_meta
 
 from reconstruction import reconstruct
 
-
 # **************************************************************
 #           TOMOGRAPHIC_DATA class
 # **************************************************************
@@ -49,15 +48,22 @@ class tomographic_data(object):
     display = None
     analyse = None
     
-    def __init__(self):
+    def __init__(self, block_sizeGB = 1, swap = False):
         # Default RAM based data array:
-        self.data = data_array(block_sizeGB = 1)        
+        self.data = data_array(dtype = 'float32', block_sizeGB = block_sizeGB, swap = swap)        
         
         # Common classes for the cvolume and for the projections:
         self.io = io(self)
         self.display = display(self)
         self.analyse = analyse(self)
     
+    def __del__(self):
+        
+        # Kill the data! Free the memory.
+        self.data = None
+        
+        print('Data killed!')
+        
 # **************************************************************
 #           VOLUME class
 # **************************************************************
@@ -66,10 +72,10 @@ class volume(tomographic_data):
     Container for the reconstructed volume data.
     """
       
-    def __init__(self, size = [0,0,0], img_pixel = [0,0,0]):
+    def __init__(self, size = [0,0,0], img_pixel = [0,0,0], block_sizeGB = 1, swap = False):
         
         # Initializa parent class:
-        tomographic_data.__init__(self)
+        tomographic_data.__init__(self, block_sizeGB, swap)
         
         # Set the correct main axis for the data object:
         self.data.dim = 0
@@ -86,7 +92,7 @@ class volume(tomographic_data):
         
         self.data.total = numpy.zeros(size, dtype = numpy.float32)
         self.meta.geometry.img_pixel = img_pixel
-        
+     
 # **************************************************************
 #           PROJECTIONS class
 # **************************************************************
@@ -99,10 +105,10 @@ class projections(tomographic_data):
     _ref  = []
     _dark = []
     
-    def __init__(self):
+    def __init__(self, block_sizeGB = 1, swap = False):
         
         # Initializa parent class:
-        tomographic_data.__init__(self)
+        tomographic_data.__init__(self, block_sizeGB, swap)
         
         # Sinograms should have dim = 1 as a main axis:
         self.data.dim = 1
@@ -111,11 +117,6 @@ class projections(tomographic_data):
         # Processing for sinograms:
         self.process = process(self)
         
-    def __del__(self):
-        
-        # Make sure the data is killed: 
-        self.data = None
-            
     def message(self, msg):
         '''
         Send a message to IPython console.

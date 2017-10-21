@@ -291,7 +291,7 @@ class geometry(misc.subclass):
 
         # Inintialize ASTRA projection geometry to import vector from it
         if blocks:
-            thetas = self.thetas[self._parent.data._index]
+            thetas = self.thetas[self._parent.data.block_index]
             
         else:
             thetas = self.thetas

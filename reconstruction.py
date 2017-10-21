@@ -87,7 +87,7 @@ class reconstruct(object):
         vol_geom = self.volume.meta.geometry.get_vol_geom()
         
         # This will only work with RAM volume data! Otherwice, need to set data to 'total'.
-        if isinstance(self.volume.data, data.data_blocks_swap):
+        if self.volume.data.is_swap():
             raise ValueError('Backprojection doesn`t support SSD data blocks for volumes!')
             
         # Pointer to the total volume:    
@@ -150,7 +150,7 @@ class reconstruct(object):
         for proj in self.projections:
             
             # This will only work with RAM volume data! Otherwise, need to use 'total' setter.
-            if isinstance(proj.data, data.data_blocks_swap):
+            if self.volume.data.is_swap():
                 raise ValueError('Forwardprojection doesn`t support swap data blocks for projections!')
             
             proj_data = proj.data.total
@@ -178,7 +178,7 @@ class reconstruct(object):
         The method of methods.
         '''
         # Switch to a different data storage if needed:
-        self.volume.switch_to_ram(keep_data = True)
+        self.volume.data.switch_to_ram(keep_data = True)
         
         # Run the reconstruction:
         self.backproject(algorithm='FDK_CUDA')
@@ -192,10 +192,10 @@ class reconstruct(object):
         '''
         
         if self.options['swap']:
-            self.volume.switch_to_swap(keep_data = True, swap_path = self.swap_path)
+            self.volume.data.switch_to_swap(keep_data = True, swap_path = self.swap_path)
         
             for proj in self.projections:
-                proj.switch_to_ram(keep_data = True)
+                proj.data.switch_to_ram(keep_data = True)
             
     def _projections_to_swap(self):
         '''
@@ -204,9 +204,9 @@ class reconstruct(object):
         
         if self.options['swap']:
             for proj in self.projections:
-                proj.switch_to_swap(keep_data = True, swap_path = self.swap_path)
+                proj.data.switch_to_swap(keep_data = True, swap_path = self.swap_path)
                 
-            self.volume.switch_to_ram(keep_data = True)
+            self.volume.data.switch_to_ram(keep_data = True)
             
     def _compute_forward_weight(self):
         '''
