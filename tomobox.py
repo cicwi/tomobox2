@@ -101,6 +101,11 @@ class projections(tomographic_data):
     """
     Container for the projection data.
     """
+    
+    # Data:
+    data = None    
+    meta = None
+    
     # Projections-specific fields:    
     _ref  = []
     _dark = []
@@ -112,7 +117,14 @@ class projections(tomographic_data):
         
         # Sinograms should have dim = 1 as a main axis:
         self.data.dim = 1
+        
+        if self.meta is not None:
+            print(self.meta.geometry.det_trans)
+        
         self.meta = proj_meta(self)
+        
+        if self.meta is not None:        
+            print(self.meta.geometry.det_trans)
         
         # Processing for sinograms:
         self.process = process(self)

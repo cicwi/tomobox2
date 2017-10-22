@@ -55,7 +55,7 @@ class analyse(misc.subclass):
             
         # if dim is not the same as the main dimension     
         else:
-            print('Warning! Summing perpendicular to the main direction of the data array is not implemented for SSD arrays!')
+            print('Warning! Summing perpendicular to the main direction of the data array is not implemented for swap arrays!')
             
             return numpy.sum(self._parent.data.total, dim)
             
@@ -70,20 +70,19 @@ class analyse(misc.subclass):
         Compute minimum.
         """
         
-        # Initial:
         if dim is not None:
-            val = self._parent.data.empty_slice(numpy.inf)
+            # Min in particular direction:
+            
+            print('Warning! Applying min in perpendicular to the main direction of the data array is not implemented for swap arrays!')
+            return numpy.min(self._parent.data.total, dim)
+            
         else:
             val = numpy.inf
-       
-        # Min    
-        for block in self._parent.data:
-            if dim is not None:
-                val = numpy.min((val, numpy.min(block, dim)), 0)
-            else:
+                
+            for block in self._parent.data:
                 val = numpy.min((val, numpy.min(block)))
             
-        return val
+            return val
 
     def max(self, dim = None):
         """
@@ -91,18 +90,18 @@ class analyse(misc.subclass):
         """
         # Initial:
         if dim is not None:
-            val = self._parent.data.empty_slice(-numpy.inf)
+            # Max in particular direction:
+            
+            print('Warning! Applying max in perpendicular to the main direction of the data array is not implemented for swap arrays!')
+            return numpy.max(self._parent.data.total, dim)
+            
         else:
             val = -numpy.inf
                 
-        for block in self._parent.data:
-            if dim is not None:
-                val = numpy.max((val, numpy.max(block, dim)), 0)
-                
-            else:
+            for block in self._parent.data:
                 val = numpy.max((val, numpy.max(block)))
             
-        return val
+            return val
         
     def percentile(self, prcnt):
         """
@@ -114,7 +113,7 @@ class analyse(misc.subclass):
             
         return val / len(self._parent.data)    
 
-    def center_of_mass(self, dim = 1):
+    def centre_of_mass(self, dim = 1):
         '''
         Return the center of mass**2 (power is there to avoid influence of small values).
             Arg:
@@ -131,9 +130,9 @@ class analyse(misc.subclass):
             xyz = data.block_xyz()
             
             m2 = block ** 2
-            xx += numpy.sum(xyz[0] * m2)
-            yy += numpy.sum(xyz[1] * m2)
-            zz += numpy.sum(xyz[2] * m2)
+            xx += numpy.sum(xyz[0][:, None, None] * m2)
+            yy += numpy.sum(xyz[1][None, :, None] * m2)
+            zz += numpy.sum(xyz[2][None, None, :] * m2)
             
             m += numpy.sum(m2)
             
@@ -592,6 +591,8 @@ class process(misc.subclass):
         
         prnt = self._parent
         
+        self._parent.message('Applying minus log....')
+        
         for ii, block in enumerate(prnt.data):
             
             if (air_intensity != 1.0):
@@ -622,6 +623,8 @@ class process(misc.subclass):
         
         prnt = self._parent
         
+        self._parent.message('Supressing salt & papper noise....')
+        
         for ii, block in enumerate(prnt.data):
             # Make a smooth version of the data and look for outlayers:
             smooth = ndimage.filters.median_filter(block, kernel)
@@ -641,6 +644,8 @@ class process(misc.subclass):
         '''
         Noisify the projection data!
         '''
+        
+        self._parent.message('More noise! Yeeey!')
         
         for ii, block in enumerate(self._parent.data):
             if mode == 'poisson':

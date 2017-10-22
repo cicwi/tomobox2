@@ -37,14 +37,27 @@ class reconstruct(object):
         self.add_projections(projections)
         
         # This is your volume:
-        self.volume = volume    
+        self.volume = volume   
+        
+        # If any of the datasets is in swap need to use swap option!
+        if volume.data.is_swap():
+            self.options['swap'] = True
             
     def add_projections(self, projections):
         
         if isinstance(projections, list):
             self.projections.extend(projections)
+            
+            # If any of the datasets is in swap need to use swap option!
+            for proj in projections:
+                if proj.data.is_swap():
+                    self.options['swap'] = True
         else:
             self.projections.append(projections)
+            
+            # If any of the datasets is in swap need to use swap option!
+            if projections.data.is_swap():
+                self.options['swap'] = True
                 
 
     def _backproject_block(self, proj_data, proj_geom, vol_data, vol_geom, algorithm):
@@ -65,8 +78,10 @@ class reconstruct(object):
             
             if algorithm == 'BP3D_CUDA':
                 asex.accumulate_BP(projector_id, vol_id, sin_id)
-            else:
+            elif algorithm == 'FDK_CUDA':
                 asex.accumulate_FDK(projector_id, vol_id, sin_id)
+            else:
+                raise ValueError('Unknown ASTRA algorithm type.')
           
         except:
             print("ASTRA error:", sys.exc_info())
@@ -96,8 +111,12 @@ class reconstruct(object):
         if vol_data.size == 0:
             raise ValueError('Volume data array is empty. Cannot backproject into an empty array.')
         
+        print('before projections loop')    
+        
         # Loop over different projection stacks:
-        for proj in self.projections:        
+        for proj in self.projections:  
+            
+            print('before block loop')    
             
             # Loop over blocks of data to save RAM:
             for block in proj.data:
@@ -111,6 +130,11 @@ class reconstruct(object):
                     
                 else:
                     self._backproject_block(block, proj_geom, vol_data, vol_geom, algorithm) 
+                    
+                print('back')
+                print(proj_geom)   
+                print(vol_geom)   
+                print(vol_data.sum())    
                 
             # Apply constraints:
             constr = self.options['constraints']
@@ -123,13 +147,20 @@ class reconstruct(object):
         '''
             
         try:  
-            
           sin_id = astra.data3d.link('-sino', proj_geom, proj_data)  
           vol_id = astra.data3d.link('-vol', vol_geom, vol_data)         
           
-          projector_id = astra.create_projector('cone', proj_geom, vol_geom)
-          
+          projector_id = astra.create_projector('cuda3d', proj_geom, vol_geom)
+         
           asex.accumulate_FP(projector_id, vol_id, sin_id) 
+          
+          print('forward')
+          print(proj_geom)   
+          print(vol_geom)
+          print(proj_data.sum())
+          
+        except:
+          print("ASTRA error:", sys.exc_info())  
           
         finally:
           astra.data3d.delete(sin_id)
@@ -150,7 +181,7 @@ class reconstruct(object):
         for proj in self.projections:
             
             # This will only work with RAM volume data! Otherwise, need to use 'total' setter.
-            if self.volume.data.is_swap():
+            if proj.data.is_swap():
                 raise ValueError('Forwardprojection doesn`t support swap data blocks for projections!')
             
             proj_data = proj.data.total
@@ -159,7 +190,7 @@ class reconstruct(object):
               raise ValueError('Projection data array is empty. Cannot backproject into an empty array.')
         
             # ASTRA projection geometry:
-            proj_geom = proj.meta.get_proj_geom()
+            proj_geom = proj.meta.geometry.get_proj_geom()
             
             # Loop over blocks of data to save RAM:
             for block in self.volume.data:
@@ -172,13 +203,25 @@ class reconstruct(object):
                     
                 else:
                     self._forwardproject_block(proj_data, proj_geom, block, vol_geom)    
+                    
+            print('forward total')
+            print(proj_data.sum())        
+            print(proj.data.total.sum())
         
     def FDK(self):
         '''
         The method of methods.
         '''
+        
+        print('Switching volume data to RAM')
+        
         # Switch to a different data storage if needed:
-        self.volume.data.switch_to_ram(keep_data = True)
+        self.volume.data.switch_to_ram(keep_data = False)
+        
+        # Make sure you start form a blank volume
+        self.volume.data.zeros()
+        
+        print('Computing backprojection')
         
         # Run the reconstruction:
         self.backproject(algorithm='FDK_CUDA')
@@ -192,7 +235,7 @@ class reconstruct(object):
         '''
         
         if self.options['swap']:
-            self.volume.data.switch_to_swap(keep_data = True, swap_path = self.swap_path)
+            self.volume.data.switch_to_swap(keep_data = True, swap_path = self.swap_path, swap_name = 'vol_swap')
         
             for proj in self.projections:
                 proj.data.switch_to_ram(keep_data = True)
@@ -204,7 +247,7 @@ class reconstruct(object):
         
         if self.options['swap']:
             for proj in self.projections:
-                proj.data.switch_to_swap(keep_data = True, swap_path = self.swap_path)
+                proj.data.switch_to_swap(keep_data = True, swap_path = self.swap_path, swap_name = 'proj_swap')
                 
             self.volume.data.switch_to_ram(keep_data = True)
             
@@ -232,10 +275,16 @@ class reconstruct(object):
         w = self.volume.data.shape.max() 
         
         for ii in range(iterations):
+            
+            # Preview:
+            self.volume.display.slice(dim = 0)
+            self.volume.display.slice(dim = 1)
+            self.projections[0].display.slice(dim = 1)
+            
             # Switch data to swap if needed:
             self._volume_to_swap()
             self.forwardproject(multiplier = -1)
-            
+
             self._projections_to_swap()
             self.backproject(multiplier = 1 / w)
             
@@ -287,12 +336,17 @@ class reconstruct(object):
         total_centre = [(max_y + min_y) / 2, (max_x - min_x) / 2]
 
         print('Total dataset size is', total_shape)
+        print('Center at:', total_centre)
                 
         # Initialize a large projection array:
-        new_data = data.data_blocks_swap(shape = total_shape, block_sizeGB = 1, dim = 1, swap_path = swap_path)            
+        new_data = data.data_array(shape = total_shape, block_sizeGB = 1, dim = 1, swap = True, swap_file = 'large_swap')            
+        
+        print('starting interpolation...')
         
         # Interpolate slice by slice:
         for ii in range(new_data.length): 
+            
+            print('slice #', ii)
             
             total_slice = new_data.empty_slice()
             total_slice_size = [(max_y - min_y), (max_x - min_x)]

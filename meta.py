@@ -270,14 +270,18 @@ class geometry(misc.subclass):
         
     @property        
     def theta_step(self):
-        return numpy.mean(self._thetas[1:] - self._thetas[0:-1])  
+        return numpy.mean(self.thetas[1:] - self.thetas[0:-1])  
         
     def init_thetas(self, theta_range = [], theta_n = 2):
         # Initialize thetas array. You can first initialize with theta_range, and add theta_n later.
-        if theta_range == []:
-            self._thetas = numpy.linspace(self._thetas[0], self._thetas[-1], theta_n)
-        else:    
-            self._thetas = numpy.linspace(theta_range[0], theta_range[1], theta_n)    
+        if theta_range != []:
+            self.thetas = numpy.linspace(theta_range[0], theta_range[1], theta_n)
+            
+        elif self._thetas:
+            self.thetas = numpy.linspace(self.thetas[0], self.thetas[-1], theta_n)
+        else:
+            self.thetas = numpy.linspace(0, numpy.pi*2, theta_n)
+                
             
     def get_astra_vector(self, blocks = False):
         """
@@ -294,7 +298,7 @@ class geometry(misc.subclass):
             thetas = self.thetas[self._parent.data.block_index]
             
         else:
-            thetas = self.thetas
+            thetas = self.thetas 
             
         proj_geom = astra.create_proj_geom('cone', self.det_pixel[1], self.det_pixel[0], det_count_z, det_count_x, thetas, self.src2obj, self.det2obj)
         proj_geom = astra.functions.geom_2vec(proj_geom)
@@ -430,8 +434,8 @@ class vol_geometry(misc.subclass):
         
         if blocks:
             # Generate volume geometry for one chunk of data:
-            start = self._parent.data._index[0]    
-            stop = self._parent.data._index[-1]
+            start = self._parent.data.block_index[0]    
+            stop = self._parent.data.block_index[-1]
             
             length = self._parent.data.length
             
@@ -470,13 +474,31 @@ class flex_geometry(geometry):
     
     src_trans = [0, 0, 0]
     
-    axs_trans = [0, 0, 0]
+    axs_trans = [0, 0]
     
     vol_trans = [0, 0, 0]     # not per projection
     vol_rot = [0, 0, 0]       # not per projecrion
     
     theta_offset = []
     
+    def __init__(self, parent, src2obj = 1, det2obj = 1, det_pixel = [1, 1], theta_range = [0, numpy.pi*2], theta_n = 2):
+        '''
+        Make sure that all relevant properties are set to some value.
+        '''
+        geometry.__init__(self, parent, src2obj = 1, det2obj = 1, det_pixel = [1, 1], theta_range = [0, numpy.pi*2], theta_n = 2)
+        
+        self.det_trans = [0, 0, 0]
+        self.det_rot = 0
+        
+        self.src_trans = [0, 0, 0]
+        
+        self.axs_trans = [0, 0]
+        
+        self.vol_trans = [0, 0, 0]     # not per projection
+        self.vol_rot = [0, 0, 0]       # not per projecrion
+        
+        print('flex_geometry inint', self.det_trans)
+        
     '''
     Modifiers (dictionary of geometry modifiers that can be applied globaly or per projection)
     VRT, HRZ and MAG are vertical, horizontal and prependicular directions relative to the original detector orientation    
@@ -717,6 +739,29 @@ class flex_geometry(geometry):
         proj_geom = astra.create_proj_geom('cone_vec', det_count_z, det_count_x, vectors)    
         
         return vectors, proj_geom
+        
+    @property
+    def thetas(self):
+        '''
+        Theats of the whole dataset.
+        '''
+        thetas = geometry.thetas
+        
+        if self.theta_offset == []:
+            numpy.zeros_like(thetas)
+        else:
+            thetas += self.theta_offset
+        
+        return thetas
+        
+    @thetas.setter
+    def thetas(self, thetas):
+        '''
+        Set thetas of the whole dataset
+        '''
+        geometry.thetas = thetas
+        
+        self.theta_offset = numpy.zeros_like(thetas)
 
 # **************************************************************
 #           PROJ_META class
@@ -732,6 +777,9 @@ class proj_meta(misc.subclass):
         misc.subclass.__init__(self, parent)
         
         self.geometry = flex_geometry(parent)
+        
+        print('proj_meta inint', self.geometry.det_trans)
+        
         #self.geometry = geometry(parent)
         
     physics = {'voltage': 0, 'current':0, 'exposure': 0}

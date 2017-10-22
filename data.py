@@ -25,9 +25,12 @@ class ram_data_pool(object):
     _data = None
     _dim = 0
     
-    def __init__(self, dim):
+    def __init__(self, dim, shape = None):
         
         self._dim = dim
+        
+        if shape is not None:
+            self._data = numpy.zeros(shape, 'float32')
         
     def __del__(self):            
         
@@ -35,17 +38,35 @@ class ram_data_pool(object):
         gc.collect()
         
     def write(self, key, image):        
+        """
+        Write a slice of data.
+        """
         misc._set_dim_data(self._data, self._dim, key, image)
         
     def read(self, key):
+        """
+        Read a slice of data.
+        """
         return misc._get_dim_data(self._data, self._dim, key)
     
+    def arbitrary(self, key, dim):
+        """
+        Get a slice of data in an arbitrary direction
+        """
+        return misc._get_dim_data(self._data, dim, key)
+        
     @property    
     def total(self):
+        """
+        All data.
+        """
         return self._data
         
     @total.setter    
     def total(self, total):
+        """
+        All data.
+        """
         self._data = total   
         
     @property
@@ -54,7 +75,9 @@ class ram_data_pool(object):
         
     @property
     def dtype(self):
-        return numpy.dtype(self._data.dtype)    
+        return numpy.dtype(self._data.dtype) 
+        
+        
     
 class swap_data_pool(object):
     """
@@ -87,11 +110,22 @@ class swap_data_pool(object):
         # Free swap:
         self._remove_swap()
         
+        print('Swap removed.')
+        
     def write(self, key, image):
+        #image = numpy.array(image, self._dtype)
         self._write_swap(key, image)
         
     def read(self, key):
-        return self._read_swap(key)
+        image = self._read_swap(key)
+        #image = numpy.array(image, self._dtype)
+        return image
+        
+    def arbitrary(self, key, dim):
+        """
+        Get a slice of data in an arbitrary direction
+        """
+        raise Exception('swap_data_pool can only retrieve slices along its main dimension!')
         
     def _read_swap(self, key):
         """
@@ -129,9 +163,9 @@ class swap_data_pool(object):
     def total(self):
         
         if self._shape is None:
-            raise ValueError('Swap data pool shape is not known! Can initialize total data.')
+            raise ValueError('Swap data pool shape is not known! Cant initialize total data.')
             
-        array = numpy.zeros(self._shape)
+        array = numpy.zeros(self._shape, self.dtype)
         
         for ii in range(self._shape[self._dim]):
             misc._set_dim_data(array, self._dim, ii, self._read_swap(ii))
@@ -142,6 +176,7 @@ class swap_data_pool(object):
     def total(self, array):
         
         self._shape = array.shape
+        self._dtype = array.dtype
         
         print('Copying data to swap...')
         
@@ -194,11 +229,11 @@ class data_array(object):
     _indexer = 'sequential'    
         
     
-    def __init__(self, array = None, shape = None, dtype = 'float32', block_sizeGB = 1, dim = 1, swap = False):
+    def __init__(self, array = None, shape = None, dtype = 'float32', block_sizeGB = 1, dim = 1, swap = False, swap_path = '/export/scratch3/kostenko/Fast_Data/swap', swap_file = 'swap'):
         
         # initialize the data pool:
         if swap:
-            self._data_pool = swap_data_pool('/export/scratch3/kostenko/Fast_Data/swap', 'swap', dim)
+            self._data_pool = swap_data_pool(swap_path, swap_file, dim)
         else:
             self._data_pool = ram_data_pool(dim)
                         
@@ -245,13 +280,14 @@ class data_array(object):
             
         # Keep old dimension
         dim = self._data_pool._dim    
-
-        new_pool = ram_data_pool(dim)
+        shape = self._data_pool.shape
+        
+        new_pool = ram_data_pool(dim, shape)
         
         if keep_data:            
             # First copy the data:
             new_pool.total = self._data_pool.total
-                
+                        
         self._data_pool = new_pool          
         
         # Clean up!
@@ -268,20 +304,19 @@ class data_array(object):
         # Swap path can be different
         # Keep old dimension
         dim = self._data_pool._dim 
-                
+        shape = self._data_pool.shape
+        dtype = self._data_pool.dtype       
+        
         if keep_data:
             # First copy the data:
-            shape = self._data_pool.shape
-            dtype = self._data_pool.dtype   
-            
             total = self._data_pool.total
             
-            self._data_pool = swap_data_pool(swap_path, swap_name, shape, dtype)
+            self._data_pool = swap_data_pool(swap_path, swap_name, dim, shape, dtype)
             self._data_pool.total = total
                         
         else:
             # Create new:
-            self._data_pool = swap_data_pool(swap_path, swap_name, dim)
+            self._data_pool = swap_data_pool(swap_path, swap_name, dim, shape, dtype)
             
         # Clean up!
         gc.collect()
@@ -344,9 +379,12 @@ class data_array(object):
         Get one slice.
         """  
         
-        if not dim is None:
-            if dim != self.dim: raise Exception('data_blocks_swap can only retrieve slices along its main dimension.')
-                                   
+        if (dim is not None) & (dim != self.dim): 
+            # If dim is not the main dimension of the data:
+            return self._data_pool.arbitrary(key, dim)
+            
+        # If dim == main dimension of the data, use buffer system:
+                       
         # Do we have a buffer of that slice?
         if key == self._slice_key:
             return self._slice
@@ -448,8 +486,9 @@ class data_array(object):
                 
                 # Set data:
                 misc._set_dim_data(self._block, self.dim, ii, self._data_pool.read(index))    
-                        
-            return self._block
+                   
+            # Make sure the block is contiguous            
+            return numpy.ascontiguousarray(self._block)
         
     def __setitem__(self, key, data):    
         """
@@ -490,10 +529,34 @@ class data_array(object):
         self.finalize_slice()  
         self.finalize_block() 
         
-        self._data_pool.total = array
+        # Default buffers:
+        self._block_key = -1
+        self._slice_key = -1
+        
+        self._data_pool.total = numpy.ascontiguousarray(array)
         
         # Update slice index:
         self.set_indexer()
+        
+    def zeros(self, shape = None):    
+        """
+        Initialize a volume of zeros
+        """
+        if shape == None:
+            # Use old shape:
+            shape = self.shape
+            
+        self.total = numpy.zeros(shape, dtype = self.dtype)
+    
+    def ones(self, shape = None):    
+        """
+        Initialize a volume of zeros
+        """
+        if shape == None:
+            # Use old shape:
+            shape = self.shape
+            
+        self.total = numpy.ones(shape, dtype = self.dtype)    
         
     def init_total(self, shape):
         """
@@ -1016,12 +1079,18 @@ class io(misc.subclass):
                     
                     # Look for unit description in the name:
                     factor = self._parse_unit(name)
-                    
-                    # If needed separate the var and save the number of save the whole string:
+
+                    if geom_key[0] in records:
+                        print('WARNING! Geometry record found twice in the log file!')
+                        
+                    # If needed separate the var and save the number of save the whole string:   
                     try:
                         records[geom_key[0]] = float(var.split()[0]) * factor
+            
                     except:
                         records[geom_key[0]] = var
+
+                    #print(geom_key[0], var)
 
         return records
        
@@ -1072,7 +1141,7 @@ class io(misc.subclass):
         records['vol_z_tra'] = vol_center
 
         # Rotation axis:
-        records['axs_hrz'] += 0.5
+        records['axs_hrz'] -= 0.5
         
         # Compute the center of the detector:
         roi = numpy.int32(records.get('roi').split(sep=','))
@@ -1128,6 +1197,7 @@ class io(misc.subclass):
 
         # Read recods from the file:
         records = self._parse_keywords(path, keywords, file_mask = 'settings.txt', separator = ':')
+        #print('records', records['axs_hrz'])
         
         # Parse the file:
         self._keywords_to_geometry(records)
