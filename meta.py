@@ -12,6 +12,7 @@ import numpy
 import time
 import astra
 import transforms3d
+import transforms3d.euler
 
 # Tomobox modules
 import reports               # Makes compact reports for different classes.
@@ -25,7 +26,8 @@ class history():
     Container for the history reconrds of operations applied to the data.
     '''
     
-    _records = []
+    def __init__(self):
+        self._records = []
     
     @property
     def records(self):
@@ -90,14 +92,7 @@ class geometry(misc.subclass):
     
     More complex geometries, flex_geometry, for instance, will be inherited.
     
-    '''    
-    
-    # Private properties:
-    _src2obj = 0
-    _det2obj = 0
-    _det_pixel = []
-    _thetas = []
-
+    '''      
     # Methods:
     def __init__(self, parent, src2obj = 1, det2obj = 1, det_pixel = [1, 1], theta_range = [0, numpy.pi*2], theta_n = 2):
         '''
@@ -108,6 +103,7 @@ class geometry(misc.subclass):
         self._src2obj = src2obj
         self._det2obj = det2obj
         self._det_pixel = det_pixel
+        self._thetas = []
         self.init_thetas(theta_range, theta_n)
     
     def report(self):
@@ -319,15 +315,15 @@ class geometry(misc.subclass):
 class vol_geometry(misc.subclass):
     """
     A separate compact class to describe volume geometry.
-    """
-    _vol_trans = [0, 0, 0]     # not per projection
-    _vol_rot = [0, 0, 0]       # not per projecrion
-    
-    _img_pixel = [0, 0, 0]     # voxel size in mm
-    
+    """    
     def __init__(self, parent):
         
         misc.subclass.__init__(self, parent)
+        
+        self._vol_trans = [0, 0, 0]     # not per projection
+        self._vol_rot = [0, 0, 0]       # not per projecrion
+    
+        self._img_pixel = [0, 0, 0]     # voxel size in mm
         
     @property
     def vol_shape(self):
@@ -335,7 +331,7 @@ class vol_geometry(misc.subclass):
         Get the total volume shape in pixels
         '''
         if self._parent.data is None:
-            self._parent.warning('Volume data is not initialized. The volume shape is [0, 0, 0].')
+            self._parent.warning('Volume data is not initialized. The volume shape is [0, 0, 0]')
             return numpy.zeros(3)
             
         else:
@@ -447,11 +443,11 @@ class vol_geometry(misc.subclass):
             size = shape * self.img_pixel
         
         else:
-            offset = 0
+            offset = 0         
             
-        vol_geom = astra.create_vol_geom(shape[1], shape[0], shape[2], 
-                  -size[0]/2 + offset, size[0]/2+ offset, -size[1]/2, size[1]/2, 
-                  -size[2]/2, size[2]/2)
+        vol_geom = astra.create_vol_geom(shape[1], shape[2], shape[0], 
+                  -size[2]/2, size[2]/2, -size[1]/2, size[1]/2, 
+                  -size[0]/2 + offset, size[0]/2 + offset)
             
         return vol_geom
     
@@ -465,21 +461,6 @@ class flex_geometry(geometry):
     
     All properties are given in "mm" and describe changes relatively to a default circular orbit.
     """
-
-    # Deviations from the standard circular geometry:
-    # unit: mm
-    # orientation: [horizontal, vertical, magnification]
-    det_trans = [0, 0, 0]
-    det_rot = 0
-    
-    src_trans = [0, 0, 0]
-    
-    axs_trans = [0, 0]
-    
-    vol_trans = [0, 0, 0]     # not per projection
-    vol_rot = [0, 0, 0]       # not per projecrion
-    
-    theta_offset = []
     
     def __init__(self, parent, src2obj = 1, det2obj = 1, det_pixel = [1, 1], theta_range = [0, numpy.pi*2], theta_n = 2):
         '''
@@ -487,6 +468,9 @@ class flex_geometry(geometry):
         '''
         geometry.__init__(self, parent, src2obj = 1, det2obj = 1, det_pixel = [1, 1], theta_range = [0, numpy.pi*2], theta_n = 2)
         
+        # Deviations from the standard circular geometry:
+        # unit: mm
+        # orientation: [horizontal, vertical, magnification]
         self.det_trans = [0, 0, 0]
         self.det_rot = 0
         
@@ -497,7 +481,7 @@ class flex_geometry(geometry):
         self.vol_trans = [0, 0, 0]     # not per projection
         self.vol_rot = [0, 0, 0]       # not per projecrion
         
-        print('flex_geometry inint', self.det_trans)
+        self.theta_offset = []
         
     '''
     Modifiers (dictionary of geometry modifiers that can be applied globaly or per projection)
@@ -601,8 +585,8 @@ class flex_geometry(geometry):
         sz_x = self.det_size[1]
         sz_y = self.det_size[0]
 
-        xx = numpy.linspace(0, sz_x, self.det_shape[1]) + x0
-        yy = numpy.linspace(0, sz_y, self.det_shape[1]) + y0
+        xx = numpy.linspace(-sz_x / 2, sz_x / 2, self.det_shape[1]) + x0
+        yy = numpy.linspace(-sz_y / 2, sz_y / 2, self.det_shape[1]) + y0
                             
         return xx, yy
         
@@ -740,6 +724,24 @@ class flex_geometry(geometry):
         
         return vectors, proj_geom
         
+    @staticmethod    
+    def merge_geometries(geometries, new_det_shape):
+        """
+        Combines description of several tiles into one. At the moment only averages vectors.
+        """
+        geom_0 = geometries[0].copy()
+        geom_0['Vectors'] *= 0
+ 
+        num = len(geometries)
+        
+        for geom in geometries:
+            geom_0['Vectors'] += geom['Vectors'] / num 
+
+        geom_0['DetectorColCount'] = new_det_shape[1]
+        geom_0['DetectorRowCount'] = new_det_shape[0]
+
+        return geom_0
+        
     @property
     def thetas(self):
         '''
@@ -770,15 +772,13 @@ class proj_meta(misc.subclass):
     '''
     This object contains various properties of the imaging system and the history of pre-processing.
     '''
-    geometry = None
-    history = history()
-
     def __init__(self, parent):
         misc.subclass.__init__(self, parent)
         
-        self.geometry = flex_geometry(parent)
+        self.geometry = None
+        self.history = history()
         
-        print('proj_meta inint', self.geometry.det_trans)
+        self.geometry = flex_geometry(parent)
         
         #self.geometry = geometry(parent)
         
@@ -792,10 +792,8 @@ class vol_meta(misc.subclass):
     '''
     This object contains properties of the volume system and the history of pre-processing.
     '''
-    history = history()  
-    geometry = None
-    
     def __init__(self, parent):
-        misc.subclass.__init__(self, parent)
+        misc.subclass.__init__(self, parent)        
         
+        self.history = history()  
         self.geometry = vol_geometry(parent)

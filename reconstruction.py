@@ -7,8 +7,9 @@ Created: Oct 2017
 This module contains tomographic reconstruction routines based on ASTRA.
 """
 import astra
-import data
 import misc
+
+from meta import flex_geometry
 
 import astra.experimental as asex
 import numpy
@@ -23,16 +24,16 @@ class reconstruct(object):
     '''
     Class that will help a tired wanderer to create beautiful images of kindersuprises. 
     '''
-    
-    projections = []
-    volumes = []
-    
-    options = {'swap': False, 'constraints': None, 'poisson_stat': False, 'ramp': 0, 'weight': False}
-
-    swap_path = '/export/scratch3/kostenko/Fast_Data/swap'
-        
+            
     def __init__(self, projections, volume):
         
+        self.projections = []
+        self.volumes = []
+    
+        self.options = {'swap': False, 'constraints': None, 'poisson_stat': False, 'ramp': 0, 'weight': False}
+
+        self.swap_path = '/export/scratch3/kostenko/Fast_Data/swap'
+    
         # Remember the projection data that we will use to reconstruct:
         self.add_projections(projections)
         
@@ -96,6 +97,8 @@ class reconstruct(object):
     def backproject(self, algorithm = 'BP3D_CUDA', multiplier = 1):
         '''
         ASTRA backprojector. No filtering by default.
+        It will loop over all registered projection datasets, 
+        collect one data block from each at a time and project it.
         '''
         
         # Volume geometry and projection geometry for ASTRA:
@@ -103,21 +106,17 @@ class reconstruct(object):
         
         # This will only work with RAM volume data! Otherwice, need to set data to 'total'.
         if self.volume.data.is_swap():
-            raise ValueError('Backprojection doesn`t support SSD data blocks for volumes!')
+            raise ValueError('Backprojection doesn`t support swap data array for volumes!')
             
         # Pointer to the total volume:    
         vol_data = self.volume.data.total
         
         if vol_data.size == 0:
-            raise ValueError('Volume data array is empty. Cannot backproject into an empty array.')
-        
-        print('before projections loop')    
+            raise ValueError('Volume data array is empty. Cannot backproject into an empty array.')  
         
         # Loop over different projection stacks:
         for proj in self.projections:  
-            
-            print('before block loop')    
-            
+   
             # Loop over blocks of data to save RAM:
             for block in proj.data:
                 
@@ -130,17 +129,76 @@ class reconstruct(object):
                     
                 else:
                     self._backproject_block(block, proj_geom, vol_data, vol_geom, algorithm) 
-                    
-                print('back')
-                print(proj_geom)   
-                print(vol_geom)   
-                print(vol_data.sum())    
-                
+                                    
             # Apply constraints:
             constr = self.options['constraints']
             if constr is not None:
                 numpy.clip(vol_data, a_min = constr[0], a_max = constr[1], out = vol_data)
 
+    def backproject_tiles(self, algorithm = 'BP3D_CUDA', multiplier = 1):
+        '''
+        ASTRA backprojector. Will stitch tiles before backprojection.
+        '''
+        
+        import matplotlib.pyplot as plt
+        
+        # Volume geometry and projection geometry for ASTRA:
+        vol_geom = self.volume.meta.geometry.get_vol_geom()
+        
+        # This will only work with RAM volume data! Otherwice, need to set data to 'total'.
+        if self.volume.data.is_swap():
+            raise ValueError('Backprojection doesn`t support swap data array for volumes!')
+            
+        # Pointer to the total volume:    
+        vol_data = self.volume.data.total
+        
+        if vol_data.size == 0:
+            raise ValueError('Volume data array is empty. Cannot backproject into an empty array.')  
+        
+        # Assuming all data has the same amount of blocks and projections    
+        bn = self.projections[0].data.block_number
+            
+        for ii in range(bn):
+            
+            # Blocks from different datasets:
+            blocks = []
+
+            # proj_geometries
+            proj_geometries = []
+
+            # Loop over different projection stacks:
+            for proj in self.projections:  
+                
+                blocks.append(proj.data[ii])
+                proj_geometries.append(proj.meta.geometry.get_proj_geom(blocks = True))
+   
+            pixel = self.projections[0].meta.geometry.det_pixel
+
+            # Produce one big block:
+            print('Stitch a block!')    
+            
+            big_block = self._stitch_block(blocks, pixel)    
+            det_shape = big_block.shape[::2]
+
+            big_geom = flex_geometry.merge_geometries(proj_geometries, det_shape)
+            
+            plt.imshow(big_block[:,0,:])
+            plt.show()
+            
+            # Backprojection:
+            if multiplier != 1:    
+                self._backproject_block(multiplier * big_block, big_geom, vol_data, vol_geom, algorithm) 
+                
+            else:
+                self._backproject_block(big_block, big_geom, vol_data, vol_geom, algorithm) 
+                                    
+            # Apply constraints:
+            constr = self.options['constraints']
+            if constr is not None:
+                numpy.clip(vol_data, a_min = constr[0], a_max = constr[1], out = vol_data)
+                
+            misc.progress_bar((ii+1) / bn)    
+                
     def _forwardproject_block(self, proj_data, proj_geom, vol_data, vol_geom):
         '''
         Forwardproject a single block of data
@@ -182,7 +240,7 @@ class reconstruct(object):
             
             # This will only work with RAM volume data! Otherwise, need to use 'total' setter.
             if proj.data.is_swap():
-                raise ValueError('Forwardprojection doesn`t support swap data blocks for projections!')
+                raise ValueError('Forwardprojection doesn`t support swap data arrays for projections!')
             
             proj_data = proj.data.total
             
@@ -224,10 +282,14 @@ class reconstruct(object):
         print('Computing backprojection')
         
         # Run the reconstruction:
-        self.backproject(algorithm='FDK_CUDA')
+        if len(self.projections) > 1:
+            self.backproject_tiles(algorithm='FDK_CUDA')
+            
+        else:
+            self.backproject(algorithm='FDK_CUDA')
 
         # Update history:    
-        self.volume.meta.history.add_record('Reconstruction generated using FDK.', [])
+        self.volume.meta.history.add_record('Reconstruction generated using stitched FDK.', [])
         
     def _volume_to_swap(self):
         '''
@@ -308,19 +370,14 @@ class reconstruct(object):
         '''
         pass
     
-    def stitch_tiles(self, swap_path):
+    def _stitch_block(self, blocks, pixel):
         '''
         Stich several projection tiles into one projection.
         
-        '''
-        
-        print('Stitching tiles...')
-        
-        pix = self.projections[0].meta.geometry.det_pixel
-        theta_n = self.projections[0].meta.geometry.theta_n
-        
-        min_x, min_y = numpy.inf
-        max_x, max_y = -numpy.inf
+        '''        
+        # Phisical detector size:
+        min_x, min_y = numpy.inf, numpy.inf
+        max_x, max_y = -numpy.inf, -numpy.inf
         
         # Find out the size required for the final dataset
         for proj in self.projections:
@@ -331,51 +388,67 @@ class reconstruct(object):
             max_x = max((max_x, max(xx)))
             max_y = max((max_y, max(yy)))
             
-        # Big slice:
-        total_shape = [(max_y - min_y) / pix[1], theta_n, (max_x - min_x) / pix[0]]     
-        total_centre = [(max_y + min_y) / 2, (max_x - min_x) / 2]
+        # size of a block: 
+        block_len = blocks[0].shape[1]     
 
-        print('Total dataset size is', total_shape)
-        print('Center at:', total_centre)
+        # Big slice:
+        total_slice_shape = numpy.array([(max_y - min_y) / pixel[1], (max_x - min_x) / pixel[0]])             
+        total_slice_shape = numpy.int32(numpy.ceil(total_slice_shape))         
+        
+        total_shape = numpy.array([total_slice_shape[0], block_len, total_slice_shape[1]])     
+        total_centre = numpy.array([(max_y + min_y) / 2, (max_x + min_x) / 2])
                 
         # Initialize a large projection array:
-        new_data = data.data_array(shape = total_shape, block_sizeGB = 1, dim = 1, swap = True, swap_file = 'large_swap')            
-        
-        print('starting interpolation...')
-        
+        big_block = numpy.zeros(total_shape, dtype = 'float32')
+                
+        #self.stich_tiles(self, total_slice, total_slice_size, total_centre, slice_key, offsets)
+        weights = self._stich_slice(total_slice_shape, total_centre, blocks, pixel, -1)
+        weights[weights < 0.1] = 0.1
+          
         # Interpolate slice by slice:
-        for ii in range(new_data.length): 
+        for ii in range(block_len): 
+            big_block[:, ii, :] = self._stich_slice(total_slice_shape, total_centre, blocks, pixel, ii) / weights
             
-            print('slice #', ii)
-            
-            total_slice = new_data.empty_slice()
-            total_slice_size = [(max_y - min_y), (max_x - min_x)]
-            
-            for proj in self.projections:
-                
-                # Detector size in mm:
-                det_size = proj.meta.geometry.det_size
-                
-                # Get a tile image:
-                img = proj.data.get_slice(ii)
-                
-                # Difference between total size and current tile size:
-                pad_x = total_shape[1] - img.shape[1]
-                pad_y = total_shape[0] - img.shape[0]
-                img = numpy.pad(img, ((0, pad_y), (0, pad_x)))
-                
-                # Offset from the left top corner:
-                offset = (proj.meta.geometry.det_trans - total_centre) + total_slice_size / 2 - det_size / 2
-                
-                print('shifting by offset:', offset)
-                
-                total_slice += interp.shift(img, offset)
-                
-            new_data[ii] = total_slice 
+        return big_block
+        
+    def _stich_slice(self, total_slice_shape, total_centre, blocks, pixel, slice_key):
+        """
+        Use interpolation to combine several tiles into one.
+        """
+        
+        # Assuming all projections have equal number of angles and same pixel sizes
+        total_slice_size = total_slice_shape * pixel        
+        total_slice = numpy.zeros(total_slice_shape)
 
-            misc.progress_bar(ii / new_data.length)
+        # Block size:        
+        sz = numpy.shape(blocks[0])
+        
+        for jj, proj in enumerate(self.projections):
+
             
-        return new_data
+            if slice_key == -1:
+                # Initialize image of ones to compute weights:
+                img = numpy.ones(sz[::2])
+                
+            else:    
+                img = blocks[jj][:, slice_key, :]
+            
+            # Detector size in mm:
+            det_size = proj.meta.geometry.det_size
+                        
+            # Offset from the left top corner:
+            det_coords = numpy.flipud(proj.meta.geometry.det_trans[:-1])
+            offset = ((det_coords - total_centre) + total_slice_size / 2 - det_size / 2) / pixel
+            
+            # Pad image to get the same size as the total_slice:        
+            pad_x = total_slice.shape[1] - img.shape[1]
+            pad_y = total_slice.shape[0] - img.shape[0]  
+            img = numpy.pad(img, ((0, pad_y), (0, pad_x)), mode = 'constant')  
+            img = interp.shift(img, offset, order = 1)
+            
+            total_slice += img
+        
+        return total_slice 
         
 # TODO: random access
     

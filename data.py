@@ -22,8 +22,6 @@ class ram_data_pool(object):
     """
     Data located in RAM memory
     """
-    _data = None
-    _dim = 0
     
     def __init__(self, dim, shape = None):
         
@@ -31,6 +29,8 @@ class ram_data_pool(object):
         
         if shape is not None:
             self._data = numpy.zeros(shape, 'float32')
+        else:
+            self._data = None
         
     def __del__(self):            
         
@@ -83,18 +83,14 @@ class swap_data_pool(object):
     """
     Data lockated on disk
     """    
-    # Swap path:
-    _swap_path = ''
-    _swap_name = 'swap'
-    
-    _dim = 0
-    _shape = None
-    _dtype = 'float32'
+
     
     def __init__(self, swap_path, swap_name, dim, shape = None, dtype = 'float32'):
         '''
         
         '''
+        
+        # Swap path:    
         self._swap_path = swap_path
         self._swap_name = swap_name        
         
@@ -206,31 +202,31 @@ class data_array(object):
     data in blocks or slices. It will request data from either the ram_data_pool
     or swap_data_pool.
     """    
-    # Block buffer and it's current key:
-    _block = []
-    _block_key = -1
-    _block_updated = False
-    
-    # Additional buffer for the slice image:
-    _slice = []
-    _slice_key = -1
-    _slice_updated = False
-    
-    # Global index from 0 to theta_n - 1
-    _global_index = []
-   
-    # Maximum block size in GB. 
-    _block_sizeGB = 1
-        
-    # Where do we get the data from?
-    _data_pool = None
-    
-    # Indexer, can be 'sequential', 'random', 'equidistant':
-    _indexer = 'sequential'    
-        
-    
+
     def __init__(self, array = None, shape = None, dtype = 'float32', block_sizeGB = 1, dim = 1, swap = False, swap_path = '/export/scratch3/kostenko/Fast_Data/swap', swap_file = 'swap'):
         
+        # Block buffer and it's current key:
+        self._block = []
+        self._block_key = -1
+        self._block_updated = False
+        
+        # Additional buffer for the slice image:
+        self._slice = []
+        self._slice_key = -1
+        self._slice_updated = False
+        
+        # Global index from 0 to theta_n - 1
+        self._global_index = []
+       
+        # Maximum block size in GB. 
+        self._block_sizeGB = 1
+            
+        # Where do we get the data from?
+        self._data_pool = None
+        
+        # Indexer, can be 'sequential', 'random', 'equidistant':
+        self._indexer = 'sequential'  
+    
         # initialize the data pool:
         if swap:
             self._data_pool = swap_data_pool(swap_path, swap_file, dim)
@@ -333,7 +329,7 @@ class data_array(object):
         Set a new buffer key.
         """
         if key >= self.block_number:
-            raise ValueError('Block key is out of bounds!')
+            raise IndexError('Block key is out of bounds!')
             
         if self._block_key != key:
             
@@ -444,10 +440,17 @@ class data_array(object):
         """
         Return itarator for the array.
         """
+        self.reset_iterator()
+        return self  
+        
+    def reset_iterator(self):
+        
+        # FInalize current buffers:
+        self.finalize_slice()
+        self.finalize_block()
+        
         # Set block_key to -1 to make sure that the first iterator will return key = 0
         self.block_key = -1     
-                
-        return self  
         
     def __next__(self):
         """
@@ -503,11 +506,11 @@ class data_array(object):
         self._block_updated = True
         
         # Update dtype:
-        if self._my_dtype != data.dtype:
-            if self._my_dtype is None: 
-                self._my_dtype = data.dtype
+        if self.dtype != data.dtype:
+            if self.dtype is None: 
+                self.dtype = data.dtype
             else:
-                print('Warning! Type of the data has changed from ' + str(self._my_dtype) + ' to ' + str(data.dtype))
+                print('Warning! Type of the data has changed from ' + str(self.dtype) + ' to ' + str(data.dtype))
                 self._my_dtype = data.dtype
 
     @property    

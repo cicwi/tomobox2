@@ -39,9 +39,8 @@ class tomographic_data(object):
     """
     
     # Data:
-    data = None    
-    meta = None
-    
+    data = None 
+        
     # Sub-classes:
     io = None
     process = None
@@ -117,14 +116,8 @@ class projections(tomographic_data):
         
         # Sinograms should have dim = 1 as a main axis:
         self.data.dim = 1
-        
-        if self.meta is not None:
-            print(self.meta.geometry.det_trans)
-        
+                
         self.meta = proj_meta(self)
-        
-        if self.meta is not None:        
-            print(self.meta.geometry.det_trans)
         
         # Processing for sinograms:
         self.process = process(self)
