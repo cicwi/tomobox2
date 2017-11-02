@@ -38,7 +38,7 @@ def report_geometry(geometry):
            print('Volume translation [hor, vert, mag]: %2.2f, %2.2f, %2.2f mm' % (geometry.vol_trans[0],geometry.vol_trans[1],geometry.vol_trans[2]))
            print('Volume  rotation [Euler]: %2.2f, %2.2f, %2.2f rad' % (geometry.vol_rot[0], geometry.vol_rot[1], geometry.vol_rot[2]))
            
-           if numpy.max(numpy.abs(geometry.theta_offset)) > 0:
+           if any(geometry.theta_offset != 0):
                print('Theta deviation: ', geometry.theta_offset)
                
            print('')    

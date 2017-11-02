@@ -65,43 +65,37 @@ class analyse(misc.subclass):
         """
         return self.sum(dim) / self._parent.data.size
 
+    def bounds(self, dim = None):
+        """
+        Compute min / max.
+        """
+        if dim is not None:
+            # Min in particular direction:
+            
+            print('Warning! Applying min/max in perpendicular to the main direction of the data array is not implemented for swap arrays!')
+            return [numpy.min(self._parent.data.total, dim), numpy.max(self._parent.data.total, dim)]
+            
+        else:
+            max_val = -numpy.inf
+            min_val = numpy.inf
+                
+            for block in self._parent.data:
+                min_val = numpy.min((min_val, numpy.min(block)))
+                max_val = numpy.min((max_val, numpy.max(block)))
+            
+            return [min_val, max_val]
+
     def min(self, dim = None):
         """
         Compute minimum.
         """
+        return self._parent.data.min(dim)
         
-        if dim is not None:
-            # Min in particular direction:
-            
-            print('Warning! Applying min in perpendicular to the main direction of the data array is not implemented for swap arrays!')
-            return numpy.min(self._parent.data.total, dim)
-            
-        else:
-            val = numpy.inf
-                
-            for block in self._parent.data:
-                val = numpy.min((val, numpy.min(block)))
-            
-            return val
-
     def max(self, dim = None):
         """
         Compute maximum.
         """
-        # Initial:
-        if dim is not None:
-            # Max in particular direction:
-            
-            print('Warning! Applying max in perpendicular to the main direction of the data array is not implemented for swap arrays!')
-            return numpy.max(self._parent.data.total, dim)
-            
-        else:
-            val = -numpy.inf
-                
-            for block in self._parent.data:
-                val = numpy.max((val, numpy.max(block)))
-            
-            return val
+        return self._parent.data.max(dim)
         
     def percentile(self, prcnt):
         """
@@ -201,12 +195,15 @@ class display(misc.subclass):
             plt.figure()
 
 
-    def slice(self, index = None, dim = 1, fig_num = []):
+    def slice(self, index = None, dim = None, fig_num = []):
         '''
         Display a 2D slice of 3D volumel
         '''
         self._figure_maker_(fig_num)
 
+        if dim is None:
+            dim = self._parent.data.dim
+            
         if index is None:
             index = self._parent.data.shape[dim] // 2
 
@@ -318,18 +315,56 @@ class postprocess(misc.subclass):
         '''
         Apply an arbitrary function:
         '''
-        process.arbitrary_function(self, func)
+        preprocess.arbitrary_function(self, func)
         
     def threshold(self, threshold = None, binary = True, morethan = True):
         '''
         Apply simple segmentation of value bounds.
         '''
-        process.threshold(self, threshold = None, binary = True, morethan = True)
+        preprocess.threshold(self, threshold = None, binary = True, morethan = True)
+        
+    def bin_volume(self):
+        '''
+        Bin data with a factor of two in all three dimensions.
+        '''
+        print('Bin-bin-bin!')    
+        
+        misc.progress_bar(0)
+        
+        data = self.total
+        data[:, :, 0:-1:2] += data[:, :, 1::2]
+        data = data[:, :, 0:-1:2]
+        data /= 2
+
+        misc.progress_bar(0.5)
+
+        data[0:-1:2, :, :] += data[1::2, :, :]
+        data = data[0:-1:2, :, :] 
+        data /= 2
+
+        misc.progress_bar(0.75)
+        
+        data[:, 0:-1:2, :] += data[:, 1::2, :]
+        data = data[:, 0:-1:2, :]
+        data /= 2
+        misc.progress_bar(1)
+
+        self._parent.data.total = data
+        
+        # Clean up
+        gc.collect()
+        
+        # Multiply the detecotr pixel width and height:
+        self._parent.meta.geometry.img_pixel = self._parent.meta.geometry.img_pixel * 2
+        
+        print('Binned.')
+        self._parent.meta.history.add_record('process.bin_volume()', 2)
+    
         
 # **************************************************************
-#           PROCESS class
+#           PREPROCESS class
 # **************************************************************       
-class process(misc.subclass):
+class preprocess(misc.subclass):
     '''
     Various preprocessing routines
     '''
@@ -451,7 +486,7 @@ class process(misc.subclass):
         print('Air intensity will be derived from 10 pixel wide border.')
         
         for ii, block in enumerate(self._parent.data):
-
+            
             if air_val is None:  
                 # Take pixels that belong to the 5 pixel-wide margin.
                 border = numpy.array([block[:10, :], block[-10:, :], block[:, -10:], block[:, :10]])
@@ -608,10 +643,8 @@ class process(misc.subclass):
             # Save block
             prnt.data[ii] = block
 
-            #print(ii)
-            
             # Progress:
-            misc.progress_bar((ii+1) / self._parent.data.block_number)
+            misc.progress_bar((ii+1) / prnt.data.block_number)
                     
         self._parent.message('Logarithm is applied.')
         self._parent.meta.history.add_record('process.log(air_intensity, bounds)', [air_intensity, lower_bound, upper_bound])
@@ -734,8 +767,8 @@ class process(misc.subclass):
         prnt = self._parent
         
         # Assuming that we have log data!
-        if not 'process.log(air_intensity, bounds)' in self._parent.meta.history.keys:                        
-            self._parent.error('Logarithm was not found in history of the projection stack. Apply log first!')
+        #if not 'process.log(air_intensity, bounds)' in self._parent.meta.history.keys:                        
+        #    self._parent.error('Logarithm was not found in history of the projection stack. Apply log first!')
         
         print('Generating the transfer function.')
         
@@ -753,13 +786,13 @@ class process(misc.subclass):
         exp_matrix = numpy.exp(-numpy.outer(thickness, mu))
         synth_counts = exp_matrix.dot(spectrum)
         
+        synth_counts = -numpy.log(synth_counts)
+        
         plt.figure()
-        plt.plot(thickness, synth_counts, 'r--', lw=4, alpha=.8)
+        plt.plot(thickness, synth_counts, 'r-', lw=4, alpha=.8)
         plt.axis('tight')
         plt.title('Intensity v.s. absorption length.')
         plt.show()
-        
-        synth_counts = -numpy.log(synth_counts)
         
         print('Callibration intensity range:', [synth_counts[0], synth_counts[-1]])
         print('Data intensity range:', [self._parent.analyse.min(), self._parent.analyse.max()])
@@ -795,6 +828,9 @@ class process(misc.subclass):
         misc.progress_bar(1)
 
         self._parent.data.total = data
+        
+        # Clean up
+        gc.collect()
         
         # Multiply the detecotr pixel width and height:
         self._parent.meta.geometry.det_pixel[0] = self._parent.meta.geometry.det_pixel[0] * 2

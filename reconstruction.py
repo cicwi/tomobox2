@@ -14,6 +14,7 @@ from meta import flex_geometry
 import astra.experimental as asex
 import numpy
 import sys
+import matplotlib.pyplot as plt
 
 import scipy.ndimage.interpolation as interp
 
@@ -30,7 +31,7 @@ class reconstruct(object):
         self.projections = []
         self.volumes = []
     
-        self.options = {'swap': False, 'constraints': None, 'poisson_stat': False, 'ramp': 0, 'weight': False}
+        self.options = {'swap': False, 'constraints': None, 'poisson_weight': False, 'ramp': 0, 'backproject_weight': False, 'preview': False, 'L2_update': True}
 
         self.swap_path = '/export/scratch3/kostenko/Fast_Data/swap'
     
@@ -38,7 +39,10 @@ class reconstruct(object):
         self.add_projections(projections)
         
         # This is your volume:
-        self.volume = volume   
+        self.volume = volume
+        
+        # L2 norm of the residual:
+        self.l2 = 0
         
         # If any of the datasets is in swap need to use swap option!
         if volume.data.is_swap():
@@ -55,12 +59,7 @@ class reconstruct(object):
                     self.options['swap'] = True
         else:
             self.projections.append(projections)
-            
-            # If any of the datasets is in swap need to use swap option!
-            if projections.data.is_swap():
-                self.options['swap'] = True
-                
-
+                            
     def _backproject_block(self, proj_data, proj_geom, vol_data, vol_geom, algorithm):
         '''
         Backproject a single block of data
@@ -71,7 +70,7 @@ class reconstruct(object):
         # At the moment we will ignore MinConstraint / MaxConstraint    
                 
         try:
-            sin_id = astra.data3d.link('-sino', proj_geom, proj_data)
+            sin_id = astra.data3d.link('-sino', proj_geom, numpy.ascontiguousarray(proj_data))
             
             vol_id = astra.data3d.link('-vol', vol_geom, vol_data)
 
@@ -94,47 +93,125 @@ class reconstruct(object):
               
         return vol_data  
 
-    def backproject(self, algorithm = 'BP3D_CUDA', multiplier = 1):
+    def backproject(self, volume = None, algorithm = 'BP3D_CUDA', multiplier = 1):
         '''
         ASTRA backprojector. No filtering by default.
         It will loop over all registered projection datasets, 
         collect one data block from each at a time and project it.
         '''
-        
-        # Volume geometry and projection geometry for ASTRA:
-        vol_geom = self.volume.meta.geometry.get_vol_geom()
-        
-        # This will only work with RAM volume data! Otherwice, need to set data to 'total'.
-        if self.volume.data.is_swap():
-            raise ValueError('Backprojection doesn`t support swap data array for volumes!')
-            
-        # Pointer to the total volume:    
-        vol_data = self.volume.data.total
-        
-        if vol_data.size == 0:
-            raise ValueError('Volume data array is empty. Cannot backproject into an empty array.')  
-        
+        if volume == None:
+            volume = self.volume
+                
         # Loop over different projection stacks:
         for proj in self.projections:  
    
             # Loop over blocks of data to save RAM:
-            for block in proj.data:
+            for proj_data in proj.data:
+                
+                slice_shape  = proj.data.slice_shape
                 
                 # ASTRA projection geometry for the current block:
-                proj_geom = proj.meta.geometry.get_proj_geom(blocks = True)
+                proj_geom = proj.meta.geometry.get_proj_geom(slice_shape, blocks = True)
                 
-                # Backprojection:
-                if multiplier != 1:    
-                    self._backproject_block(multiplier * block, proj_geom, vol_data, vol_geom, algorithm) 
-                    
+                #print('vol_data', vol_data.sum())
+                
+                if multiplier != 1:
+                    self._backproject(proj_data * multiplier, proj_geom, volume, algorithm = algorithm)
                 else:
-                    self._backproject_block(block, proj_geom, vol_data, vol_geom, algorithm) 
-                                    
-            # Apply constraints:
+                    self._backproject(proj_data, proj_geom, volume, algorithm = algorithm)
+
+    def _backproject(self, proj_data, proj_geom, volume, algorithm = 'BP3D_CUDA'):
+        """
+        Forward project to all volume blocks or the total volume.
+        """
+        # Single block volume:
+        if volume.data.block_number == 1:
+            
+            vol_data = volume.data.total
+            vol_geom = volume.meta.geometry.get_vol_geom()  
+            
+            self._backproject_block(proj_data, proj_geom, vol_data, vol_geom, algorithm)     
+            
+            # Constraints:
             constr = self.options['constraints']
             if constr is not None:
-                numpy.clip(vol_data, a_min = constr[0], a_max = constr[1], out = vol_data)
+                numpy.clip(vol_data, a_min = constr[0], a_max = constr[1], out = vol_data) 
+            
+            
+            volume.data.total = vol_data 
+        
+        # Multi-block volume:    
+        else:    
+        
+            # Back-Project into all volume blocks:
+            for jj, vol_data in enumerate(volume.data):
+                # Back-project the residual:
+                vol_geom = volume.meta.geometry.get_vol_geom(blocks = True)  
+                self._backproject_block(proj_data, proj_geom, vol_data, vol_geom, algorithm)
+                
+                # Constraints:
+                constr = self.options['constraints']
+                if constr is not None:
+                    numpy.clip(vol_data, a_min = constr[0], a_max = constr[1], out = vol_data) 
+                    
+                volume.data[jj] = vol_data
+                                                    
+    def stich_tiles(self, projection_data):
+        """
+        Stitch several tiles together and produce a new projection data. Output into projection_data.
+        """ 
 
+        #print('Stitching tiles...')               
+        
+        # Total data shape:
+        slice_shape, centre = self._stitch_shape()    
+        data_length = self.projections[0].data.length
+        data_shape = [slice_shape[0], data_length, slice_shape[1]]
+        
+        projection_data.data.init_total(data_shape)
+        
+        # Assuming all data has the same amount of blocks and projections    
+        bn = self.projections[0].data.block_number     
+
+        # Make sure that the block length of the stiched data is the same as the input:
+        projection_data.data.change_block_length(self.projections[0].data.block_shape[1])
+        
+        print('New block length is ', self.projections[0].data.block_shape[1])
+        print('New block sizeGB is ', projection_data.data.sizeGB)
+
+        for ii in range(bn):   
+            # Blocks from different datasets:
+            blocks = []
+
+            # geometries
+            geometries = []
+
+            # Loop over different projection stacks:
+            for proj in self.projections:  
+                
+                blocks.append(proj.data[ii])
+                geometries.append(proj.meta.geometry)
+   
+            pixel = self.projections[0].meta.geometry.det_pixel
+
+            # Produce one big block:
+            big_block = self._stitch_block(blocks, pixel)                
+            projection_data.data[ii] = big_block
+
+            misc.progress_bar((ii+1) / bn)
+
+        # Create a projection geometry:            
+        slice_shape = projection_data.data.slice_shape
+
+        print('New slice shape is:', slice_shape)
+
+        big_geom = flex_geometry.mean(geometries)
+        
+        # This is important, new geometry should know it's parent!
+        big_geom._parent = projection_data
+        
+        projection_data.meta.geometry = big_geom   
+            
     def backproject_tiles(self, algorithm = 'BP3D_CUDA', multiplier = 1):
         '''
         ASTRA backprojector. Will stitch tiles before backprojection.
@@ -142,21 +219,12 @@ class reconstruct(object):
         
         import matplotlib.pyplot as plt
         
-        # Volume geometry and projection geometry for ASTRA:
-        vol_geom = self.volume.meta.geometry.get_vol_geom()
-        
         # This will only work with RAM volume data! Otherwice, need to set data to 'total'.
-        if self.volume.data.is_swap():
-            raise ValueError('Backprojection doesn`t support swap data array for volumes!')
-            
-        # Pointer to the total volume:    
-        vol_data = self.volume.data.total
-        
-        if vol_data.size == 0:
-            raise ValueError('Volume data array is empty. Cannot backproject into an empty array.')  
-        
+        #if self.volume.data.is_swap():
+        #    raise ValueError('Backprojection doesn`t support swap data array for volumes!')
+                    
         # Assuming all data has the same amount of blocks and projections    
-        bn = self.projections[0].data.block_number
+        bn = self.projections[0].data.block_number  
             
         for ii in range(bn):
             
@@ -164,38 +232,57 @@ class reconstruct(object):
             blocks = []
 
             # proj_geometries
-            proj_geometries = []
+            geometries = []
 
             # Loop over different projection stacks:
             for proj in self.projections:  
                 
                 blocks.append(proj.data[ii])
-                proj_geometries.append(proj.meta.geometry.get_proj_geom(blocks = True))
+                geometries.append(proj.meta.geometry)
    
             pixel = self.projections[0].meta.geometry.det_pixel
 
             # Produce one big block:
-            print('Stitch a block!')    
+            print('Stitching a block...')    
             
             big_block = self._stitch_block(blocks, pixel)    
-            det_shape = big_block.shape[::2]
 
-            big_geom = flex_geometry.merge_geometries(proj_geometries, det_shape)
+            print('Total block shape is', big_block.shape)
+            
+            slice_shape = big_block.shape[::2]
+
+            big_geom = flex_geometry.mean(geometries).get_proj_geom(slice_shape, blocks= True)
             
             plt.imshow(big_block[:,0,:])
             plt.show()
             
-            # Backprojection:
-            if multiplier != 1:    
-                self._backproject_block(multiplier * big_block, big_geom, vol_data, vol_geom, algorithm) 
+            print('Backprojection...') 
+            
+            # vol_data:
+            for jj, vol_data in enumerate(self.volume.data):
                 
-            else:
-                self._backproject_block(big_block, big_geom, vol_data, vol_geom, algorithm) 
-                                    
-            # Apply constraints:
-            constr = self.options['constraints']
-            if constr is not None:
-                numpy.clip(vol_data, a_min = constr[0], a_max = constr[1], out = vol_data)
+                if vol_data.size == 0:
+                    raise ValueError('Volume data array is empty. Cannot backproject into an empty array.')  
+                    
+                # Volume geometry and projection geometry for ASTRA:
+                vol_geom = self.volume.meta.geometry.get_vol_geom(blocks = True)    
+            
+                # Backprojection:
+                if multiplier != 1:    
+                    self._backproject_block(multiplier * big_block, big_geom, vol_data, vol_geom, algorithm = algorithm) 
+                    
+                else:
+                    self._backproject_block(big_block, big_geom, vol_data, vol_geom, algorithm = algorithm) 
+                                        
+                # Apply constraints:
+                constr = self.options['constraints']
+                if constr is not None:
+                    numpy.clip(vol_data, a_min = constr[0], a_max = constr[1], out = vol_data)
+                    
+                    
+                # If data has more than one block, than vol_data is linked to the block buffer and 
+                # not the whole data array. 
+                self.volume.data[jj] = vol_data
                 
             misc.progress_bar((ii+1) / bn)    
                 
@@ -203,20 +290,15 @@ class reconstruct(object):
         '''
         Forwardproject a single block of data
         '''
-            
         try:  
           sin_id = astra.data3d.link('-sino', proj_geom, proj_data)  
           vol_id = astra.data3d.link('-vol', vol_geom, vol_data)         
           
           projector_id = astra.create_projector('cuda3d', proj_geom, vol_geom)
-         
+          
+          #print('**proj_data', proj_data.sum())
           asex.accumulate_FP(projector_id, vol_id, sin_id) 
-          
-          print('forward')
-          print(proj_geom)   
-          print(vol_geom)
-          print(proj_data.sum())
-          
+          #print('**proj_data', proj_data.sum())            
         except:
           print("ASTRA error:", sys.exc_info())  
           
@@ -227,54 +309,92 @@ class reconstruct(object):
           
         return proj_data                  
                 
-    def forwardproject(self, multiplier = 1):
+    def forwardproject(self, volume = None, multiplier = 1):
         '''
         ASTRA forwardprojector. 
         '''
-        
-        # Volume geometry and projection geometry for ASTRA:
-        vol_geom = self.volume.meta.geometry.get_vol_geom()
+        if volume == None:
+            volume = self.volume
         
         # Loop over different projection stacks:
         for proj in self.projections:
             
-            # This will only work with RAM volume data! Otherwise, need to use 'total' setter.
-            if proj.data.is_swap():
-                raise ValueError('Forwardprojection doesn`t support swap data arrays for projections!')
-            
-            proj_data = proj.data.total
-            
-            if proj_data.size == 0:
-              raise ValueError('Projection data array is empty. Cannot backproject into an empty array.')
-        
-            # ASTRA projection geometry:
-            proj_geom = proj.meta.geometry.get_proj_geom()
-            
-            # Loop over blocks of data to save RAM:
-            for block in self.volume.data:
+            # Loop over blocks:
+            for jj, proj_data in enumerate(proj.data):
                 
-                # Generate geometry for the current block:
-                vol_geom = self.volume.meta.geometry.get_vol_geom(blocks = True)
+                # Make sure that our projection data pool is not updated by the forward projection:
+                #proj.data._read_only = True
+                if proj_data.size == 0:
+                  raise ValueError('Projection data array is empty. Cannot backproject into an empty array.')
+            
+                slice_shape  = proj.data.slice_shape
                 
-                if multiplier != 1:    
-                    self._forwardproject_block(proj_data, proj_geom, multiplier * block, vol_geom)    
-                    
-                else:
-                    self._forwardproject_block(proj_data, proj_geom, block, vol_geom)    
-                    
-            print('forward total')
-            print(proj_data.sum())        
-            print(proj.data.total.sum())
+                # ASTRA projection geometry:
+                proj_geom = proj.meta.geometry.get_proj_geom(slice_shape, blocks = True)
+                
+                self._forwardproject(proj_data, proj_geom, volume, multiplier)
+                
+                proj.data[jj] = proj_data
+                
         
+    def _forwardproject(self, proj_data, proj_geom, volume, multiplier = 1):
+        """
+        Forward project to all volume blocks or the total volume.
+        """
+        # Single block volume:
+        if volume.data.block_number == 1:
+            
+            vol_data = volume.data.total
+            vol_geom = volume.meta.geometry.get_vol_geom()  
+            
+            self._forwardproject_block(proj_data, proj_geom, vol_data * multiplier, vol_geom)     
+        
+        # Multi-block volume:    
+        else:    
+        
+            # Project all volume blocks:
+            for vol_data in volume.data:    
+                
+                # Volume geometry and projection geometry for ASTRA:
+                vol_geom = volume.meta.geometry.get_vol_geom(blocks = True)  
+                
+                # Forward project and subtract from the buffer of proj_data               
+                self._forwardproject_block(proj_data, proj_geom, vol_data * multiplier, vol_geom)     
+                
+    def _volume_to_swap(self, read_only = False):
+        '''
+        Put volume to swap and projections to RAM. Do it before forwardprojection
+        '''        
+        if self.options['swap']:
+            self.volume.data.switch_to_swap(keep_data = True, swap_path = self.swap_path, swap_name = 'vol_swap')
+            
+        self.volume.data._read_only = read_only
+            
+    def _projections_to_swap(self, read_only = False):
+        '''
+        Put projections to swap and volume to RAM. Do it before backprojection
+        '''
+        if self.options['swap']:
+            for proj in self.projections:
+                proj.data.switch_to_swap(keep_data = True, swap_path = self.swap_path, swap_name = 'proj_swap')
+                
+        for proj in self.projections:
+            proj.data._read_only = read_only    
+            
+    def _compute_forward_weight(self):
+        '''
+        Compute weights applied to the forward projection. FP(BP(ONES))
+        '''          
+                       
     def FDK(self):
         '''
         The method of methods.
         '''
         
-        print('Switching volume data to RAM')
+        #print('Switching volume data to RAM')
         
         # Switch to a different data storage if needed:
-        self.volume.data.switch_to_ram(keep_data = False)
+        #self.volume.data.switch_to_ram(keep_data = False)
         
         # Make sure you start form a blank volume
         self.volume.data.zeros()
@@ -290,91 +410,187 @@ class reconstruct(object):
 
         # Update history:    
         self.volume.meta.history.add_record('Reconstruction generated using stitched FDK.', [])
-        
-    def _volume_to_swap(self):
-        '''
-        Put volume to swap and projections to RAM. Do it before forwardprojection
-        '''
-        
-        if self.options['swap']:
-            self.volume.data.switch_to_swap(keep_data = True, swap_path = self.swap_path, swap_name = 'vol_swap')
-        
-            for proj in self.projections:
-                proj.data.switch_to_ram(keep_data = True)
-            
-    def _projections_to_swap(self):
-        '''
-        Put projections to swap and volume to RAM. Do it before backprojection
-        '''
-        
-        if self.options['swap']:
-            for proj in self.projections:
-                proj.data.switch_to_swap(keep_data = True, swap_path = self.swap_path, swap_name = 'proj_swap')
                 
-            self.volume.data.switch_to_ram(keep_data = True)
-            
-    def _compute_forward_weight(self):
+    def SIRT(self, iterations = 5):
         '''
-        Compute weights applied to the forward projection. FP(BP(ONES))
+        Simultaneous Iterative Reconstruction Technique using subsets... also known as James
         '''        
-        
-        
-    def SIRT(self, iterations = 3):
-        '''
-        Simultaneous Iterative Reconstruction Technique... also known as James
-        '''        
-        
-        # Compute weights:
-        print('Computing weights...')
-        
-        # Create temporary volume of ones...
-        # Create temporary projections...
-        # Back
-        # Forward
-        # Max projections
-        
-        # Weight to be on the safe side:
-        w = self.volume.data.shape.max() 
-        
-        for ii in range(iterations):
-            
-            # Preview:
-            self.volume.display.slice(dim = 0)
-            self.volume.display.slice(dim = 1)
-            self.projections[0].display.slice(dim = 1)
-            
-            # Switch data to swap if needed:
-            self._volume_to_swap()
-            self.forwardproject(multiplier = -1)
 
-            self._projections_to_swap()
-            self.backproject(multiplier = 1 / w)
-            
-            misc.progress_bar((ii + 1) / iterations)
+        # Weight to be on the safe side:
+        prj_weight = 1 / numpy.sqrt(self.volume.data.shape.max()) / self.volume.data.block_number
+                        
+        # Initialize a reconstruction volume:
+        #guess = self.volume.copy(swap = False)   
+        # Make sure that our guess volume is a single block RAM based:
+        #guess.data.switch_to_ram()
+        #guess.data.change_block_size(9999)
+                        
+        # Initialize L2:
+        l2 = []
+
+        volume = self.volume
         
+        print('Starting iterations...')
+        for ii in range(iterations):
+        
+            # Here loops of blocks and projections stack can be organized diffrently
+            # I will implement them in the easyest way now.
+            _l2 = 0
+            # Loop over different projection stacks:
+            for proj in self.projections:
+                
+                slice_shape = proj.data.slice_shape
+                            
+                # Loop over blocks:
+                for proj_data in proj.data:
+                    
+                    # Make sure that our projection data pool is not updated by the forward projection
+                    # update the buffer only to keep residual in it
+                    proj.data._read_only = True
+                    
+                    # Geometry of the block:
+                    proj_geom = proj.meta.geometry.get_proj_geom(slice_shape, blocks = True)
+                    
+                    # Take into account Poisson:
+                    if self.options['poisson_weight']:
+                        prj_weight = prj_weight * numpy.sqrt(numpy.exp(-proj_data))
+                    
+                    # Forward project:    
+                    self._forwardproject(proj_data, proj_geom, volume, -1)    
+                    
+                    # L2 norm:
+                    if self.options['L2_update']:
+                        #print('L2',numpy.sqrt((proj_data ** 2).mean()))
+                        _l2 += numpy.sqrt((proj_data ** 2).mean()) / proj.data.block_number 
+                    
+                    # Apply weights to forward projection residual:
+                    proj_data *= prj_weight
+                    
+                    self._backproject(proj_data, proj_geom, volume)
+                
+            l2.append(_l2)
+            
+            # Preview
+            if self.options['preview']:
+                self.volume.display.slice(dim = 0)
+                
+            misc.progress_bar((ii+1) / iterations)
+        
+        plt.figure(15)
+        plt.plot(l2)
+        plt.title('Residual L2')
+                
     def CPLS(self):
         '''
         Chambolle-Pock Least Squares
         '''
         pass
         
-    def EM(self):
+    def EM(self, iterations = 5):
         '''
         Expectation maximization
         '''
-        pass
+        # Weight to be on the safe side:
+        prj_weight = 5 #/ numpy.sqrt(self.volume.data.shape.max()) * self.volume.data.block_number
+                        
+        # Initialize a reconstruction volume:
+                        
+        # Initialize L2:
+        norm = []
+
+        volume = self.volume
+        
+        # Make sure volume is above null...
+        volume.data.total *= numpy.int32(volume.data.total > 0)
+                
+        print('Iterations...')
+        for ii in range(iterations):
+        
+            # Here loops of blocks and projections stack can be organized diffrently
+            # I will implement them in the easyest way now.
+            _norm = 0
+            # Loop over different projection stacks:
+            for proj in self.projections:
+                
+                slice_shape = proj.data.slice_shape
+                            
+                # Loop over blocks:
+                for proj_data in proj.data:
+                    
+                    # Make sure that our projection data pool is not updated by the forward projection
+                    # update the buffer only to keep residual in it
+                    proj.data._read_only = True
+                    
+                    # Geometry of the block:
+                    proj_geom = proj.meta.geometry.get_proj_geom(slice_shape, blocks = True)
+                    
+                    # Take into account Poisson:
+                    #if self.options['poisson_weight']:
+                    #    prj_weight = prj_weight * numpy.sqrt(numpy.exp(-proj_data))
+                    
+                    # Empty block:    
+                    block = proj.data.empty_block()
+                    
+                    # Forward project:    
+                    self._forwardproject(block, proj_geom, volume)    
+                    
+                    # Divide and regularize:
+                    proj_data /= (block + 1e-10)   
+                    numpy.clip(proj_data, a_min = 0.1, a_max = 10, out = proj_data) 
+                    
+                    #plt.figure()
+                    #plt.imshow(proj_data[5, :, :])
+                    #plt.colorbar()
+                    #plt.show()
+                    
+                    # Norm:
+                    if self.options['L2_update']:
+                        #print('L2',numpy.sqrt((proj_data ** 2).mean()))
+                        _norm += numpy.sqrt(((proj_data - 1) ** 2).mean()) / proj.data.block_number 
+                    
+                    # Apply weights to forward projection residual:
+                    proj_data *= prj_weight
+                    
+                    # Backproject and multiply:
+                    for jj, vol_data in enumerate(volume.data):
+                        
+                        # Back-project the residual:
+                        vol_geom = volume.meta.geometry.get_vol_geom(blocks = True) 
+                        
+                        vol_block = volume.data.empty_block()
+                        self._backproject_block(proj_data, proj_geom, vol_block, vol_geom, 'BP3D_CUDA')
+                        
+                        vol_data *= vol_block
+                        
+                        # Constraints:
+                        constr = self.options['constraints']
+                        if constr is not None:
+                            numpy.clip(vol_data, a_min = constr[0], a_max = constr[1], out = vol_data) 
+                        
+                        volume.data[jj] = vol_data
+                
+            norm.append(_norm)
+            
+            # Preview
+            if self.options['preview']:
+                self.volume.display.slice(dim = 0)
+                
+            misc.progress_bar((ii+1) / iterations)
+        
+        plt.figure(15)
+        plt.plot(norm)
+        plt.title('Residual L2')
         
     def FISTA(self):
         '''
         
         '''
         pass
-    
-    def _stitch_block(self, blocks, pixel):
-        '''
-        Stich several projection tiles into one projection.
         
-        '''        
+    def _stitch_shape(self):
+        """
+        Compute the size of the stiched dataset.
+        """
         # Phisical detector size:
         min_x, min_y = numpy.inf, numpy.inf
         max_x, max_y = -numpy.inf, -numpy.inf
@@ -387,16 +603,27 @@ class reconstruct(object):
             min_y = min((min_y, min(yy)))
             max_x = max((max_x, max(xx)))
             max_y = max((max_y, max(yy)))
-            
-        # size of a block: 
-        block_len = blocks[0].shape[1]     
-
-        # Big slice:
-        total_slice_shape = numpy.array([(max_y - min_y) / pixel[1], (max_x - min_x) / pixel[0]])             
-        total_slice_shape = numpy.int32(numpy.ceil(total_slice_shape))         
         
-        total_shape = numpy.array([total_slice_shape[0], block_len, total_slice_shape[1]])     
+        pixel = self.projections[0].meta.geometry.det_pixel    
+            
+        # Big slice:
+        slice_shape = numpy.array([(max_y - min_y) / pixel[1], (max_x - min_x) / pixel[0]])             
+        slice_shape = numpy.int32(numpy.ceil(slice_shape))  
+        
         total_centre = numpy.array([(max_y + min_y) / 2, (max_x + min_x) / 2])
+        
+        return slice_shape, total_centre
+    
+    def _stitch_block(self, blocks, pixel):
+        '''
+        Stich several projection tiles into one projection.
+        
+        '''        
+        # size of a block: 
+        block_len = blocks[0].shape[1] 
+        total_slice_shape, total_centre = self._stitch_shape()
+
+        total_shape = numpy.array([total_slice_shape[0], block_len, total_slice_shape[1]])     
                 
         # Initialize a large projection array:
         big_block = numpy.zeros(total_shape, dtype = 'float32')

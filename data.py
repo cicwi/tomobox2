@@ -10,7 +10,8 @@ This module contains routines related to the data storage for the tomobox.
 import gc
 import numpy
 
-from PIL import Image      # image reader / writer
+#from PIL import Image      # image reader / writer
+from libtiff import TIFF
 import os                  # file-name routines
 import re                  # used in read_image_stack
 from stat import ST_CTIME  # used in sort_by_date
@@ -21,20 +22,24 @@ import misc
 class ram_data_pool(object):
     """
     Data located in RAM memory
-    """
-    
-    def __init__(self, dim, shape = None):
+    """    
+    def __init__(self, dim, shape = None, dtype = 'float32'):
         
         self._dim = dim
         
         if shape is not None:
-            self._data = numpy.zeros(shape, 'float32')
+            self._data = numpy.zeros(shape, dtype)
         else:
             self._data = None
         
-    def __del__(self):            
+    def __del__(self):                    
+        self.release()        
         
-        self._data = None
+    def release(self): 
+        '''
+        Release resources.
+        '''
+        self._data = None        
         gc.collect()
         
     def write(self, key, image):        
@@ -67,29 +72,35 @@ class ram_data_pool(object):
         """
         All data.
         """
-        self._data = total   
+        self._data = total
         
     @property
     def shape(self):    
         return numpy.array(self._data.shape)
         
+    @shape.setter
+    def shape(self, shape):
+        self._data = numpy.zeros(shape, self.dtype)
+        
     @property
     def dtype(self):
-        return numpy.dtype(self._data.dtype) 
+        if self._data is not None:
+            return numpy.dtype(self._data.dtype) 
+        else:
+            return 'float32' 
         
-        
+    @dtype.setter
+    def dtype(self, dtype):
+        self._data = numpy.array(self._data, dtype = dtype)
     
 class swap_data_pool(object):
     """
     Data lockated on disk
-    """    
-
-    
-    def __init__(self, swap_path, swap_name, dim, shape = None, dtype = 'float32'):
+    """        
+    def __init__(self, swap_path, swap_name, dim, shape = None, dtype = 'float32', disk_dtype = 'float16'):
         '''
         
         '''
-        
         # Swap path:    
         self._swap_path = swap_path
         self._swap_name = swap_name        
@@ -99,15 +110,23 @@ class swap_data_pool(object):
             
         self._dim = dim
         self._shape = shape
-        self._dtype = dtype 
+        self._dtype = dtype
+        
+        # Unfortunately we can't write float16 on disk for some reason...
+        self._disk_dtype = disk_dtype
             
     def __del__(self):        
         
         # Free swap:
+        self.release()
+        
+    def release(self): 
+        '''
+        Release resources.
+        '''
         self._remove_swap()
-        
         print('Swap removed.')
-        
+                
     def write(self, key, image):
         #image = numpy.array(image, self._dtype)
         self._write_swap(key, image)
@@ -130,7 +149,7 @@ class swap_data_pool(object):
         file = os.path.join(self._swap_path, self._swap_name + '_%05u.tiff' % key)
         
         # Read image:
-        return io._read_image(file)
+        return numpy.array(io._read_image(file), self._dtype)
         
     def _write_swap(self, key, image):
         """
@@ -139,7 +158,7 @@ class swap_data_pool(object):
         file = os.path.join(self._swap_path, self._swap_name + '_%05u.tiff' % key)
         
         # Write image:
-        io._write_image(file, image)
+        io._write_image(file, numpy.array(image, self._disk_dtype))
         
     def _remove_swap(self):
         """
@@ -150,7 +169,7 @@ class swap_data_pool(object):
         if os.path.exists(path_files):
             try:
                 os.remove(path_files)
-                print('Swap files removed.')
+                print('Removed:', path_files)
                 
             except:
                 print('Failed to remove swap files at: ' + path_files)            
@@ -191,7 +210,15 @@ class swap_data_pool(object):
         
     @property
     def dtype(self):
-        return self._dtype            
+        return self._dtype    
+
+    @shape.setter
+    def shape(self, shape):
+        self._shape = shape
+
+    @dtype.setter
+    def dtype(self, dtype):
+        self._dtype = dtype
             
 # **************************************************************
 #           DATA_BLOCKS class
@@ -203,7 +230,10 @@ class data_array(object):
     or swap_data_pool.
     """    
 
-    def __init__(self, array = None, shape = None, dtype = 'float32', block_sizeGB = 1, dim = 1, swap = False, swap_path = '/export/scratch3/kostenko/Fast_Data/swap', swap_file = 'swap'):
+    def __init__(self, array = None, shape = None, dtype = 'float32', block_sizeGB = 1, dim = 1, read_only = False, swap = False, swap_path = '/export/scratch3/kostenko/Fast_Data/swap', swap_file = 'swap'):
+        
+        # Read only:
+        self._read_only = read_only
         
         # Block buffer and it's current key:
         self._block = []
@@ -242,23 +272,189 @@ class data_array(object):
             self._data_pool.total = numpy.zeros(shape, dtype = dtype)            
                     
     def __del__(self):
-        
+        self.release()        
+            
+    def release(self): 
+        '''
+        Release resources.
+        '''
         # Double check that the last buffer was written on disk:
         try:    
-            self.finalize_slice()  
             self.finalize_block() 
             
         except:
-            print('Data block not finalized.')
+            print('Data block is not finalized. Releasing resources!')
             
         finally:
             # Free memory:
-            self._block = []
-            self._slice = []
+            self._block = None
+            self._slice = None
+            
+            self._data_pool.release()
+                            
             gc.collect()
             
             print('data_array deleted!')
+            
+    def add(self, x):
+        """
+        a + b
+        """    
+        if isinstance(x, data_array):
+            if x.shape != self.shape:
+                raise Exception('Data shapes dp not match!!!')
+            
+            if x.block_number == self.block_number:
+                # Copy by block:
+                for jj, block in enumerate(x):
+                    self[jj] += block
+    
+            else:
+                # Copy by slice:
+                for jj in range(x.length):
+                    self.set_slice(self.get_slice(jj) + x.get_slice(jj), jj)
+        else:
+            # Add a number:
+            for jj, block in enumerate(self):
+                self[jj] += x
+                
+    def subtract(self, x):
+        """
+        a - x
+        """     
+        if isinstance(x, data_array):
+            if x.shape != self.shape:
+                raise Exception('Data shapes dp not match!!!')
+            
+            if x.block_number == self.block_number:
+                # Copy by block:
+                for jj, block in enumerate(x):
+                    self[jj] -= block
+    
+            else:
+                # Copy by slice:
+                for jj in range(x.length):
+                    self.set_slice(self.get_slice(jj) - x.get_slice(jj), jj)               
+        else:
+            # Subtract a number:
+            for jj, block in enumerate(self):
+                self[jj] -= x
+
+    def multiply(self, x):
+        """
+        a * x
+        """        
+        if isinstance(x, data_array):
+            if x.shape != self.shape:
+                raise Exception('Data shapes dp not match!!!')
+            
+            if x.block_number == self.block_number:
+                # Copy by block:
+                for jj, block in enumerate(x):
+                    self[jj] *= block
+    
+            else:
+                # Copy by slice:
+                for jj in range(x.length):
+                    self.set_slice(self.get_slice(jj) * x.get_slice(jj), jj)
+                    
+        else:
+            # Divide by a number:
+            for jj, block in enumerate(self):
+                self[jj] *= x
+
+    def divide(self, x):
+        """
+        Implicit a / x
+        """        
+        if isinstance(x, data_array):
+            
+            if x.shape != self.shape:
+                raise Exception('Data shapes dp not match!!!')
+            
+            if x.block_number == self.block_number:
+                # Copy by block:
+                for jj, block in enumerate(x):
+                    self[jj] /= block
+    
+            else:
+                # Copy by slice:
+                for jj in range(x.length):
+                    self.set_slice(self.get_slice(jj) / x.get_slice(jj), jj)               
+        else:
+            # Divide by a number:
+            for jj, block in enumerate(self):
+                self[jj] /= x
+
+    def clip(self, amin = 0, amax = 999):
+        """
+        Clip the values
+        """
+        print('Clippin values between %u and %u' % (amin, amax))
         
+        for jj, block in enumerate(self):
+            self[jj] = numpy.clip(block, a_min = amin, a_max = amax)
+            
+            misc.progress_bar((jj+1) / self.block_number)
+
+        
+    def cast_uint8(self, amax = None):
+        """
+        Cast data to uint8.
+        """   
+
+        print('Downcasting data to an 8-bit integer.')         
+        if amax is not None:
+            self.clip(amax = amax)
+        else:
+            
+            amax = self.max()
+            self.clip()
+            
+        self.divide(amax)
+        self.multiply(255)
+        
+        self.total = numpy.uint8(self.total)
+        
+        return amax
+        
+    def min(self, dim = None):
+        """
+        Compute min value
+        """
+        if dim is not None:
+            # Min in particular direction:
+            
+            print('Warning! Applying min in perpendicular to the main direction of the data array is not implemented for swap arrays!')
+            return numpy.min(self.total, dim)
+            
+        else:
+            val = numpy.inf
+                
+            for block in self:
+                val = numpy.min((val, numpy.min(block)))
+            
+            return val
+            
+    def max(self, dim = None):
+        """
+        Compute max value
+        """
+        # Initial:
+        if dim is not None:
+            # Max in particular direction:
+            
+            print('Warning! Applying max in perpendicular to the main direction of the data array is not implemented for swap arrays!')
+            return numpy.max(self.total, dim)
+            
+        else:
+            val = -numpy.inf
+                
+            for block in self:
+                val = numpy.max((val, numpy.max(block)))
+            
+            return val
+
     def is_swap(self):
         """
         Am is swap or am I ram?
@@ -269,20 +465,21 @@ class data_array(object):
         """
         Switches data to a RAM based array.
         """
-        
         if isinstance(self._data_pool, ram_data_pool):            
             # Already in RAM
             return 
             
         # Keep old dimension
         dim = self._data_pool._dim    
-        shape = self._data_pool.shape
-        
-        new_pool = ram_data_pool(dim, shape)
         
         if keep_data:            
             # First copy the data:
+            shape = self._data_pool.shape
+            new_pool = ram_data_pool(dim, shape)
             new_pool.total = self._data_pool.total
+            
+        else:
+            new_pool = ram_data_pool(dim)
                         
         self._data_pool = new_pool          
         
@@ -298,24 +495,20 @@ class data_array(object):
         #(swap_path, swap_name, dim, shape = None, dtype = 'float32'):
 
         # Swap path can be different
-        # Keep old dimension
-        dim = self._data_pool._dim 
-        shape = self._data_pool.shape
-        dtype = self._data_pool.dtype       
-        
         if keep_data:
             # First copy the data:
-            total = self._data_pool.total
+            new_pool = swap_data_pool(swap_path, swap_name, self._data_pool._dim, self._data_pool.shape, self._data_pool.dtype)
+            new_pool.total = self._data_pool.total
             
-            self._data_pool = swap_data_pool(swap_path, swap_name, dim, shape, dtype)
-            self._data_pool.total = total
-                        
+            self._data_pool.release()
+            self._data_pool = new_pool
+            
         else:
             # Create new:
-            self._data_pool = swap_data_pool(swap_path, swap_name, dim, shape, dtype)
+            self._data_pool.release()
+            self._data_pool = swap_data_pool(swap_path, swap_name, self._data_pool._dim)
             
-        # Clean up!
-        gc.collect()
+        gc.collect()    
         
         print('Switched data pool to swap')        
               
@@ -334,7 +527,6 @@ class data_array(object):
         if self._block_key != key:
             
             # Write buffer on disk if needed:
-            self.finalize_slice()
             self.finalize_block()
             
             # Update indexing:
@@ -350,12 +542,26 @@ class data_array(object):
         self._block_sizeGB = block_sizeGB
         
         gc.collect()
-                                
+    
+    def change_block_length(self, length):
+        """
+        Adjust the block_sizeGB and number of blocks to the given block length.
+        """
+        self.block_key = -1 
+        self._block = []
+
+        block_step = length
+
+        self._block_sizeGB = self.sizeGB / numpy.ceil(self.length / block_step - 1)
+                
+        gc.collect()
+
+                            
     def finalize_slice(self):
         """
         If buffer was modified - update file on disk.
         """
-        if (self._slice_updated) & (self._slice_key >= 0):
+        if (not self._read_only) & (self._slice_updated) & (self._slice_key >= 0):
             self._data_pool.write(self._slice_key, self._slice)
             self._slice_updated = False
 
@@ -363,11 +569,17 @@ class data_array(object):
         """
         If buffer (block) was modified - update data_pool.
         """        
-        if self._block_updated & self.block_key >= 0:
+        
+        # Just in case... finalize slice buffer
+        self.finalize_slice()
+        
+        if (not self._read_only) & (self._block_updated) & (self.block_key >= 0):
             
             for ii, index in enumerate(self.block_index):
                 self._data_pool.write(index, misc._get_dim_data(self._block, self.dim, ii))
-                                
+             
+            #print('Block finalized', len(self.block_index))       
+            
             self._block_updated = False
         
     def get_slice(self, key, dim = None):
@@ -446,7 +658,6 @@ class data_array(object):
     def reset_iterator(self):
         
         # FInalize current buffers:
-        self.finalize_slice()
         self.finalize_block()
         
         # Set block_key to -1 to make sure that the first iterator will return key = 0
@@ -463,7 +674,6 @@ class data_array(object):
 
         else:     
             # End loop, update block:
-            self.finalize_slice()
             self.finalize_block()            
             
             raise StopIteration
@@ -474,10 +684,8 @@ class data_array(object):
         """
         
         # If it is a current buffer:
-        if self._block_key == key:    
-            return self._block
+        if self._block_key != key:    
             
-        else:
             # Update buffer key:
             self.block_key = key
         
@@ -488,10 +696,14 @@ class data_array(object):
             for ii, index in enumerate(self.block_index):
                 
                 # Set data:
-                misc._set_dim_data(self._block, self.dim, ii, self._data_pool.read(index))    
-                   
-            # Make sure the block is contiguous            
-            return numpy.ascontiguousarray(self._block)
+                try:    
+                    misc._set_dim_data(self._block, self.dim, ii, self._data_pool.read(index))    
+                    
+                except:
+                    # If data does not exist on disk or of differnt shape, return zeros
+                    return self._block
+                                               
+        return self._block
         
     def __setitem__(self, key, data):    
         """
@@ -500,6 +712,9 @@ class data_array(object):
         
         # If the block moves to a new position:    
         self.block_key = key
+        
+        if any(data.shape != self.block_shape):
+            print('WARNING!!! Native block shape doesn`t match input block:', self.block_shape, data.shape )
                         
         # Update RAM buffer:
         self._block = data    
@@ -507,17 +722,33 @@ class data_array(object):
         
         # Update dtype:
         if self.dtype != data.dtype:
-            if self.dtype is None: 
-                self.dtype = data.dtype
+            if self._data_pool.dtype is None: 
+                self._data_pool.dtype = data.dtype
             else:
                 print('Warning! Type of the data has changed from ' + str(self.dtype) + ' to ' + str(data.dtype))
-                self._my_dtype = data.dtype
+                self._data_pool.dtype = data.dtype
 
+    def make_contiguous(self):
+        """
+        Use this to make data contiguous for ASTRA.
+        """
+        if isinstance(self._data_pool.total, swap_data_pool):
+            raise TypeError('_data_pool should be of the ram_data_pool type to become contiguous!')
+            
+        self._data_pool.total = numpy.ascontiguousarray(self._data_pool.total)
+        
     @property    
     def total(self):
         """
         Get all data.
         """        
+        # Need to finalize buffers in case total will be used as a pointer to set data in the RAM pool:
+        self.finalize_block()  
+        
+        # Default buffers:
+        self._block_key = -1
+        self._slice_key = -1
+        
         return self._data_pool.total
                 
     @total.setter
@@ -525,18 +756,21 @@ class data_array(object):
         """
         Set all data.
         """
-        self._my_shape = array.shape
-        self._my_dtype = array.dtype
+        if self._read_only:
+            return
         
         # Make sure the buffers are finalized:
-        self.finalize_slice()  
         self.finalize_block() 
         
+        # Update shape and type of the data:
+        self._data_pool.shape = array.shape
+        self._data_pool.dtype = array.dtype
+                
         # Default buffers:
         self._block_key = -1
         self._slice_key = -1
         
-        self._data_pool.total = numpy.ascontiguousarray(array)
+        self._data_pool.total = array
         
         # Update slice index:
         self.set_indexer()
@@ -549,7 +783,22 @@ class data_array(object):
             # Use old shape:
             shape = self.shape
             
-        self.total = numpy.zeros(shape, dtype = self.dtype)
+        if self._read_only:
+            print('Warning! Setting a read only data array to zeros!')
+        
+        if isinstance(self._data_pool, ram_data_pool):            
+            
+            # Use total is the array is in the RAM memory:
+            self.total = numpy.zeros(shape, dtype = self.dtype)
+            
+        else:
+            # Use blocks if the data is on disk:
+            self.init(shape)
+            
+            # Loop over blocks:
+            for ii, block in enumerate(self):
+                
+                self[ii] = self.empty_block()
     
     def ones(self, shape = None):    
         """
@@ -559,15 +808,30 @@ class data_array(object):
             # Use old shape:
             shape = self.shape
             
-        self.total = numpy.ones(shape, dtype = self.dtype)    
+        if self._read_only:
+            print('Warning! Setting a read only data array to ones!')
+            
+        if isinstance(self._data_pool, ram_data_pool):            
+            
+            # Use total is the array is in the RAM memory:
+            self.total = numpy.ones(shape, dtype = self.dtype)
+            
+        else:
+            # Use blocks if the data is on disk:
+            self.init(shape)
+            
+            # Loop over blocks:
+            for ii, block in enumerate(self):
+                
+                self[ii] = self.empty_block(val = 1)
         
-    def init_total(self, shape):
+    def init(self, shape):
         """
         Initialize an empty array of a given shape. Can now write individual blocks.
         """
-        self._my_shape = shape
+        self._data_pool.shape = shape
         
-        # INitialize slice index:
+        # Initialize slice index:
         self.set_indexer()
         
     @property
@@ -598,7 +862,7 @@ class data_array(object):
         """
         return numpy.dtype(self._data_pool.dtype)
             
-    def set_indexer(self, indexer = None):
+    def set_indexer(self, indexer = 'sequential'):
         '''
         Create a global index for slices. Alowes to have everything in sequential, random or equidistant order.
         '''
@@ -631,6 +895,9 @@ class data_array(object):
         """
         
         if self._block_key < 0:
+            #raise IndexError('Block buffer is empty, there is no block index.')
+            # Can be called by the get_slice, then it's OK
+            
             return numpy.array([])
 
         block_step = int(numpy.ceil(self.length / self.block_number))
@@ -764,14 +1031,36 @@ class io(misc.subclass):
     """
     Reads / writes stacks of images.
     """
+    # Is applied to writing a stack of images. Not to a single image to avoid scaling problems.
+    force_type = None
     
-    _parent = None
+    def __init__(self, parent):
+        misc.subclass.__init__(self, parent)
+        
+        # Initialize options:
+        self.options = {'binning': 1, 'index_range': [], 'index_step': 1, 'x_roi': [], 'y_roi': []}
     
     @staticmethod
-    def _read_image(path_file):
+    def _read_image(path_file, binning = 1, x_roi = [], y_roi = []):
+        """
+        Read a single file
+        """
+        #im = Image.open(path_file)
+        #im = numpy.flipud(numpy.array(im, dtype = 'float32'))
         
-        im = Image.open(path_file)
-        return numpy.flipud(numpy.array(im, dtype = 'float32'))
+        tiff = TIFF.open(path_file, mode='r')
+        im = tiff.read_image()
+        tiff.close()
+        
+        if (y_roi != []):
+            im = im[y_roi[0]:y_roi[1], :]
+        if (x_roi != []):
+            im = im[:, x_roi[0]:x_roi[1]]
+        
+        if binning != 1:
+            im = im[::binning, ::binning]
+
+        return im
 
     @staticmethod        
     def _sort_by_date(files):
@@ -796,8 +1085,7 @@ class io(misc.subclass):
     
         return files
         
-    @staticmethod
-    def _read_image_stack(file, index_step = 1):
+    def _read_image_stack(self, file, index_step = 1):
         """
         Low level image stack reader.
         """
@@ -821,8 +1109,12 @@ class io(misc.subclass):
     
         #print(files)
     
+        binning = self.options['binning']
+        x_roi  = self.options['x_roi']
+        y_roi  = self.options['y_roi']
+
         # Read the first file:
-        image = io._read_image(files[0])
+        image = io._read_image(files[0], binning, x_roi, y_roi)
         sz = numpy.shape(image)
         
         file_n = len(files)//index_step
@@ -834,9 +1126,9 @@ class io(misc.subclass):
             
             filename = files[ii*index_step]
             try:
-                a = io._read_image(filename)
+                a = io._read_image(filename, binning, x_roi, y_roi)
             except:
-                print('WARNING! FILE IS CORRUPTED. CREATING A BLANCK IMAGE.')
+                print('WARNING! FILE IS CORRUPTED. CREATING A BLANK IMAGE.')
                 a = numpy.zeros(data.shape[1:], dtype = numpy.float32)
                 
             if a.ndim > 2:
@@ -852,18 +1144,16 @@ class io(misc.subclass):
     
         return data
     
-    @staticmethod
-    def _read_images(path_folder, filter = [], x_roi = [], y_roi = [], index_range = [], index_step = 1):  
+    def _read_images(self, path_folder, filter = []):  
         """
         Find images in the folder, read them all!
         
         Args:
             filter (str): search for filenames caontaining the given string
-            x_roi = [from, to]: horizontal range
-            y_roi = [from, to]: vertical range
-            index_range = [from, to]: read images in the given range
-            index_step (int): step length in the reader loop
         """
+        
+        index_range = self.options['index_range'] 
+        index_step = self.options['index_step']
         
         # if it's a file, read all alike, if a directory find a file to start from:
         if os.path.isfile(path_folder):
@@ -907,15 +1197,10 @@ class io(misc.subclass):
                 print('Reading every %d-nd(rd) image.' % index_step)
             #srt = self.settings['sort_by_date']AMT24-25-SU1/
 
-            data = io._read_image_stack(os.path.join(path_folder,filename), index_step)
+            data = self._read_image_stack(os.path.join(path_folder,filename), index_step)
             
             if (index_range != []):
                 data = data[index_range[0]:index_range[1], :, :]
-
-            if (y_roi != []):
-                data = data[:, y_roi[0]:y_roi[1], :]
-            if (x_roi != []):
-                data = data[:, :, x_roi[0]:x_roi[1]]
 
             return data
         
@@ -924,14 +1209,23 @@ class io(misc.subclass):
         """
         File writer.
         """
-        im = Image.fromarray(numpy.flipud(image.squeeze()))
-        im.save(path_file)
+        
+        # Instead of PIL I will use libtiff cause it can handle 16bit floating point
+        #im = Image.fromarray(numpy.flipud(image.squeeze()))
+        #im.save(path_file)
+        tiff = TIFF.open(path_file, mode='w')
+        tiff.write_image(image)
+        tiff.close()
         
     def read_dark(self, path_file):
         """
         Read the reference flat field image or several of them.
         """
-        dark = self._read_image(path_file)
+        binning = self.options['binning']
+        x_roi  = self.options['x_roi']
+        y_roi  = self.options['y_roi']
+        
+        dark = io._read_image(path_file, binning, x_roi, y_roi)
         dark = numpy.flipud(dark)
         
         self._parent._dark = dark
@@ -947,15 +1241,19 @@ class io(misc.subclass):
         
         ref = []
 
+        binning = self.options['binning']
+        x_roi  = self.options['x_roi']
+        y_roi  = self.options['y_roi']
+
         if type(path_files) == str:
-            ref  = self._read_image(path_files)
+            ref  = io._read_image(path_files, binning, x_roi, y_roi)
             
         elif type(path_files) == list:
             for file in path_files:
-                if os.path.isfile(file): ref.append(self._read_image(file))
+                if os.path.isfile(file): ref.append(io._read_image(file, binning, x_roi, y_roi))
                 
         else:
-            print('path_files parameter in read_ref() should be iether a full file name or a list of file names')
+            print('path_files parameter in read_ref() should be iether a full file name or a list of file names')            
             
         # Swap the axses for ASTRA:
         ref = numpy.transpose(ref, [1,0,2])    
@@ -978,6 +1276,7 @@ class io(misc.subclass):
         self._parent.data.total = numpy.transpose(data, (1, 0, 2))
         
         # Collect garbage:
+        data = None
         gc.collect()
         
         # add record to the history:
@@ -997,20 +1296,32 @@ class io(misc.subclass):
         # add record to the history:
         self._parent.meta.history.add_record('io.read_slices', path)
         
-    def write_slices(self, path, file_name = 'data'):
+    def write_data(self, path, file_name = 'data'):
         '''
-        Read volume slices.
+        Write data images on disk. The main dimension of the data array will be used.
         '''        
+        print('Writing data on disk...')        
         
-        data = self._read_images(path, filter) 
-        
-        self._parent.data.total = data
-        
-        # Collect garbage:
-        gc.collect()
-        
+        # Make path if not exists:
+        if not os.path.exists(path):
+            os.makedirs(path)
+            
+        if self.force_type is not None:
+            bounds = self._parent.analize.bounds
+            
+        for ii in range(self._parent.data.length):
+            
+            img = self._parent.data.get_slice(ii)
+            
+            if self.force_type is not None:
+                img = io.cast_to_type(img, self.force_type, bounds)
+            
+            io._write_image(os.path.join(path, file_name + '_%05u.tiff' % ii), img)    
+            
+            misc.progress_bar((ii+1) / self._parent.data.length)
+                            
         # add record to the history:
-        self._parent.meta.history.add_record('io.read_slices', path)    
+        self._parent.meta.history.add_record('io.write_slices', path)    
         
     def _parse_unit(self, string):
         '''
@@ -1103,10 +1414,13 @@ class io(misc.subclass):
         '''
         meta = self._parent.meta
                 
+        binning = self.options['binning']
+
         # Convert the geometry dictionary to geometry object:        
         meta.geometry.src2obj = records.get('src2obj')
         meta.geometry.det2obj = records.get('src2det') - records.get('src2obj')        
-        meta.geometry.img_pixel = [records.get('img_pixel') * self._parse_unit('[um]'), records.get('img_pixel') * self._parse_unit('[um]')]  
+        meta.geometry.img_pixel = [records.get('img_pixel') * self._parse_unit('[um]') * binning, 
+                                   records.get('img_pixel') * self._parse_unit('[um]') * binning]                            
 
         try:                                                
             meta.geometry.theta_range = [records.get('first_angle') * self._parse_unit('[deg]'), records.get('last_angle') * self._parse_unit('[deg]')]
@@ -1219,4 +1533,33 @@ class io(misc.subclass):
         self.read_projections(path)
         
         self.parse_flexray(path)
+        
+    @staticmethod    
+    def cast_to_type(image, dtype, bounds = []):
+        """
+        Cast to float or int to save space. Rescale to bounds if casted to int.
+        """
+        dtype = numpy.dtype(dtype)
+        
+        if dtype.kind == 'f':
+            # Floating points:
+            return numpy.array(image, dtype)   
+            
+        elif dtype.kind == 'i':
+            # Integers:
+            if bounds == []:
+                mn = image.min()  
+                mx = image.max()  
+            else:
+                mn = bounds[0]
+                mx = bounds[0]
+
+            image = (image - mn) / (mx - mn) * numpy.iinfo(dtype).max
+            image[image < 0] = 0
+            image = numpy.array(image, dtype)
+            
+            return image
+            
+        else:
+            raise TypeError('Cannot cast to this type!!!') 
     

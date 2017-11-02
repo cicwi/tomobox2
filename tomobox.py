@@ -18,7 +18,7 @@ import warnings
 #import gc
 
 # Own modules:
-from analysis import process
+from analysis import preprocess
 from analysis import postprocess
 from analysis import display
 from analysis import analyse
@@ -38,16 +38,8 @@ class tomographic_data(object):
     This is a data container class that will be inherited by volume and projections classes.
     """
     
-    # Data:
-    data = None 
-        
-    # Sub-classes:
-    io = None
-    process = None
-    display = None
-    analyse = None
-    
     def __init__(self, block_sizeGB = 1, swap = False):
+        
         # Default RAM based data array:
         self.data = data_array(dtype = 'float32', block_sizeGB = block_sizeGB, swap = swap)        
         
@@ -55,13 +47,21 @@ class tomographic_data(object):
         self.io = io(self)
         self.display = display(self)
         self.analyse = analyse(self)
+        
+        # Specific to the projection data or the volume data:
+        self.process = None
+        self.meta = None
     
     def __del__(self):
         
         # Kill the data! Free the memory.
-        self.data = None
+        self.release()
         
-        print('Data killed!')
+    def release(self): 
+        '''
+        Release resources.
+        '''
+        self.data.release()
         
 # **************************************************************
 #           VOLUME class
@@ -71,19 +71,30 @@ class volume(tomographic_data):
     Container for the reconstructed volume data.
     """
       
-    def __init__(self, size = [0,0,0], img_pixel = [0,0,0], block_sizeGB = 1, swap = False):
-        
+    def __init__(self, array = None, shape = None, img_pixel = [1,1,1], block_sizeGB = 1, swap = False):
+        """
+        Initialize.
+        """
         # Initializa parent class:
         tomographic_data.__init__(self, block_sizeGB, swap)
         
-        # Set the correct main axis for the data object:
-        self.data.dim = 0
+        if array is not None:
+            self.data.total = array
+            
+        elif shape is not None:
+            self.data.total = numpy.zeros(shape, dtype = numpy.float32)
         
+        #else:
+        #    raise ValueError('Come on, man! You need to specify at least the array size.')
+
+        # Volume-specific stuff: 
         self.meta = vol_meta(self)
         self.process = postprocess(self)
-        
-        self.initialize_volume(size, img_pixel)
-        
+            
+        # Set the correct main axis for the data object:
+        self.data.dim = 0
+        self.meta.geometry.img_pixel = img_pixel    
+                 
     def initialize_volume(self, size, img_pixel):
         '''
         Initialize a dataset of a given size
@@ -91,6 +102,17 @@ class volume(tomographic_data):
         
         self.data.total = numpy.zeros(size, dtype = numpy.float32)
         self.meta.geometry.img_pixel = img_pixel
+        
+    def copy(self, swap = False):
+        
+        array = self.data.total 
+        img_pixel = self.meta.geometry.img_pixel
+        block_sizeGB = self.data._block_sizeGB
+
+        vol = volume(array = array, img_pixel = img_pixel, block_sizeGB = block_sizeGB, swap = swap)
+        vol.data.dim = 0
+        
+        return vol
      
 # **************************************************************
 #           PROJECTIONS class
@@ -101,27 +123,21 @@ class projections(tomographic_data):
     Container for the projection data.
     """
     
-    # Data:
-    data = None    
-    meta = None
-    
-    # Projections-specific fields:    
-    _ref  = []
-    _dark = []
-    
     def __init__(self, block_sizeGB = 1, swap = False):
         
         # Initializa parent class:
         tomographic_data.__init__(self, block_sizeGB, swap)
+           
+        # Projections-specific fields:    
+        self._ref  = []
+        self._dark = []
+        
+        self.meta = proj_meta(self)
+        self.process = preprocess(self)
         
         # Sinograms should have dim = 1 as a main axis:
         self.data.dim = 1
                 
-        self.meta = proj_meta(self)
-        
-        # Processing for sinograms:
-        self.process = process(self)
-        
     def message(self, msg):
         '''
         Send a message to IPython console.

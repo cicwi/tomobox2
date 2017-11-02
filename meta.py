@@ -17,6 +17,7 @@ import transforms3d.euler
 # Tomobox modules
 import reports               # Makes compact reports for different classes.
 import misc
+import copy
 
 # **************************************************************
 #           HISTORY class
@@ -25,19 +26,16 @@ class history():
     '''
     Container for the history reconrds of operations applied to the data.
     '''
-    
-    def __init__(self):
-        self._records = []
-    
-    @property
-    def records(self):
-        return self._records.copy()
-        
+                
     def __init__(self):
         
         self._records = []
         self.add_record('Created')
-    
+
+    @property
+    def records(self):
+        return self._records.copy()
+
     def add_record(self, operation = '', properties = None):
         
         # Add a new history record:
@@ -67,7 +65,7 @@ class history():
     
     def time_last(self):
         # Time between two latest records:
-        if self._records.size() > 0:
+        if numpy.size(self._records) > 0:
             return self._records[-1][2] - self._records[-2][2]
             
     def _delete_after(self, operation):
@@ -100,12 +98,19 @@ class geometry(misc.subclass):
         '''
         misc.subclass.__init__(self, parent)
         
+        self.init(src2obj, det2obj, det_pixel, theta_range, theta_n)
+        
+        
+    def init(self, src2obj = 1, det2obj = 1, det_pixel = [1, 1], theta_range = [0, numpy.pi*2], theta_n = 2):
+        """
+        External initializer of basic geometry parameters.
+        """
         self._src2obj = src2obj
         self._det2obj = det2obj
         self._det_pixel = det_pixel
         self._thetas = []
         self.init_thetas(theta_range, theta_n)
-    
+        
     def report(self):
         '''
         Print a report of the geometry.
@@ -270,44 +275,36 @@ class geometry(misc.subclass):
         
     def init_thetas(self, theta_range = [], theta_n = 2):
         # Initialize thetas array. You can first initialize with theta_range, and add theta_n later.
+        # Avoid recursion, use _thetas instead of thetas!
         if theta_range != []:
-            self.thetas = numpy.linspace(theta_range[0], theta_range[1], theta_n)
+            self._thetas = numpy.linspace(theta_range[0], theta_range[1], theta_n)
             
-        elif self._thetas:
-            self.thetas = numpy.linspace(self.thetas[0], self.thetas[-1], theta_n)
+        elif self._thetas != []:
+            self._thetas = numpy.linspace(self._thetas[0], self._thetas[-1], theta_n)
         else:
-            self.thetas = numpy.linspace(0, numpy.pi*2, theta_n)
+            self._thetas = numpy.linspace(0, numpy.pi*2, theta_n)
                 
             
-    def get_astra_vector(self, blocks = False):
+    def get_proj_geom(self, slice_shape, blocks = False):
         """
         Generate the vector that describes positions of the source and detector. + Returns the corrsponding projection geometry.
         If block == True: returns geometry of the current block.
         """
         
-        sz = self._parent.data.slice_shape
-        det_count_x = sz[1]
-        det_count_z = sz[0]
+        det_count_x = slice_shape[1]
+        det_count_z = slice_shape[0]
 
         # Inintialize ASTRA projection geometry to import vector from it
         if blocks:
             thetas = self.thetas[self._parent.data.block_index]
             
         else:
-            thetas = self.thetas 
+            thetas = self.thetas[self._parent.data._global_index] 
             
         proj_geom = astra.create_proj_geom('cone', self.det_pixel[1], self.det_pixel[0], det_count_z, det_count_x, thetas, self.src2obj, self.det2obj)
         proj_geom = astra.functions.geom_2vec(proj_geom)
         
-        return proj_geom['Vectors'], proj_geom
-
-    def get_proj_geom(self, blocks = False):
-        """
-        Generate ASTRA progection geometry.
-        """
-        vect, geom = self.get_astra_vector(blocks)
-        
-        return geom
+        return proj_geom
    
 # **************************************************************
 #           VOLUME_GEOMETRY class
@@ -430,6 +427,7 @@ class vol_geometry(misc.subclass):
         
         if blocks:
             # Generate volume geometry for one chunk of data:
+               
             start = self._parent.data.block_index[0]    
             stop = self._parent.data.block_index[-1]
             
@@ -438,10 +436,13 @@ class vol_geometry(misc.subclass):
             # Compute offset from the centre:
             centre = (length - 1) / 2
             offset = (start + stop) / 2 - centre
+            offset = offset * self.img_pixel[0]
             
-            shape[1] = (stop - start + 1) 
+            #shape[1] = (stop - start + 1) 
+            
+            shape = self._parent.data.block_shape
             size = shape * self.img_pixel
-        
+
         else:
             offset = 0         
             
@@ -471,17 +472,54 @@ class flex_geometry(geometry):
         # Deviations from the standard circular geometry:
         # unit: mm
         # orientation: [horizontal, vertical, magnification]
-        self.det_trans = [0, 0, 0]
+        self.det_trans = numpy.array([0., 0., 0.])
         self.det_rot = 0
         
-        self.src_trans = [0, 0, 0]
+        self.src_trans = numpy.array([0., 0., 0.])
         
-        self.axs_trans = [0, 0]
+        self.axs_trans = numpy.array([0., 0.])
         
-        self.vol_trans = [0, 0, 0]     # not per projection
-        self.vol_rot = [0, 0, 0]       # not per projecrion
+        self.vol_trans = numpy.array([0., 0., 0.])     # not per projection
+        self.vol_rot = numpy.array([0., 0., 0.])       # not per projecrion
         
-        self.theta_offset = []
+        self.theta_offset = numpy.array([])
+
+    @staticmethod 
+    def mean(geometries):
+        """
+        Merge several geometries into one by averaging detector and source vectors
+        """
+        
+        new_geom = geometries[0].copy()
+        
+        # Average flexray motor positions:
+        new_geom.det_trans = numpy.array([0., 0., 0.])
+        new_geom.det_rot = 0
+        new_geom.src_trans = numpy.array([0., 0., 0.]) 
+        new_geom.axs_trans = numpy.array([0., 0.])
+        new_geom.vol_trans = numpy.array([0., 0., 0.])
+        new_geom.vol_rot = numpy.array([0., 0., 0.])
+        new_geom.theta_offset = new_geom.theta_offset * 0
+        
+        n = len(geometries)    
+        
+        for geom in geometries:
+            
+            new_geom.det_trans = new_geom.det_trans + (geom.det_trans / n)
+            new_geom.det_rot = new_geom.det_rot + (geom.det_rot / n)
+            new_geom.src_trans = new_geom.src_trans + (geom.src_trans / n)           
+            new_geom.axs_trans = new_geom.axs_trans + (geom.axs_trans / n)
+            new_geom.vol_trans = new_geom.vol_trans + (geom.vol_trans / n)
+            new_geom.vol_rot = new_geom.vol_rot + (geom.vol_rot / n)            
+            new_geom.theta_offset = new_geom.theta_offset + (geom.theta_offset / n)
+            
+        return new_geom 
+        
+    def copy(self):
+        """
+        Copy me!
+        """
+        return copy.deepcopy(self)
         
     '''
     Modifiers (dictionary of geometry modifiers that can be applied globaly or per projection)
@@ -605,10 +643,10 @@ class flex_geometry(geometry):
         Return coordinates of the detector boundary for each projection:
         [left, right], [top, bottom]
         """
-        vectors = self.get_astra_vector()
+        vectors = self.get_proj_geom(slice_shape = [10, 10])['Vectors']
         
         det_centre = vectors[:, 3:6].copy() 
-        det_shape = geometry.det_shape
+        det_shape = self.det_shape
         
         det_axis_vrt = vectors[:, 9:12] * det_shape[0] / 2 
         det_axis_hrz = vectors[:, 6:9] * det_shape[1] / 2
@@ -625,7 +663,8 @@ class flex_geometry(geometry):
         """
         Return coordinates of the source for each projection.
         """
-        vectors = self.get_astra_vector()
+        # Use fake detector size as it doesnt matter:
+        vectors = self.get_proj_geom(slice_shape = [10, 10])['Vectors']
         
         src_vect = vectors[:, 0:3].copy() 
 
@@ -645,12 +684,14 @@ class flex_geometry(geometry):
         print(src)
         print(lr[0])      
   
-    def get_astra_vector(self, blocks):
+    def get_proj_geom(self, slice_shape, blocks = False):
         """
         Generate the vector that describes positions of the source and detector.
         """
         # Call parent method
-        vectors, proj_geom = geometry.get_astra_vector(self, blocks)
+        proj_geom = geometry.get_proj_geom(self, slice_shape, blocks)
+        
+        vectors = proj_geom['Vectors']
         
         # Modify vector and apply it to astra projection geometry:
         for ii in range(0, vectors.shape[0]):
@@ -715,17 +756,12 @@ class flex_geometry(geometry):
             src_vect[:] -= T            
             det_vect[:] -= T
         
-        # Update proj_geom:
-        sz = self._parent.data.slice_shape
-        det_count_x = sz[1]
-        det_count_z = sz[0]
-            
-        proj_geom = astra.create_proj_geom('cone_vec', det_count_z, det_count_x, vectors)    
-        
-        return vectors, proj_geom
+        proj_geom['Vectors'] = vectors        
+
+        return proj_geom
         
     @staticmethod    
-    def merge_geometries(geometries, new_det_shape):
+    def merge_proj_geom(geometries, new_det_shape):
         """
         Combines description of several tiles into one. At the moment only averages vectors.
         """
@@ -747,13 +783,15 @@ class flex_geometry(geometry):
         '''
         Theats of the whole dataset.
         '''
-        thetas = geometry.thetas
+        # Call base geometry property thetas:
+        thetas = geometry.thetas.fget(self)
         
-        if self.theta_offset == []:
-            numpy.zeros_like(thetas)
-        else:
+        if self.theta_offset.size:
             thetas += self.theta_offset
-        
+        else:
+            numpy.zeros_like(thetas)
+            
+            
         return thetas
         
     @thetas.setter
@@ -761,7 +799,7 @@ class flex_geometry(geometry):
         '''
         Set thetas of the whole dataset
         '''
-        geometry.thetas = thetas
+        geometry.thetas.fset(self, thetas)
         
         self.theta_offset = numpy.zeros_like(thetas)
 

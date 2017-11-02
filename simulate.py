@@ -16,6 +16,8 @@ import numpy
 import xraylib
 import matplotlib.pyplot as plt
 
+import odl    # Is used for phantom creation.
+
 class spectra():
     '''
     Simulates spectral phenomena that involve x-ray-matter interaction
@@ -289,28 +291,31 @@ class phantom():
     '''
     
     @staticmethod     
-    def shepp3d(sz = 512):
-        import tomopy.misc
+    def shepp3d(sz = [256, 256, 256]):
+        #import tomopy.misc
         
-        #dim = numpy.array([sz, sz, sz])
-        #space = odl.uniform_discr(min_pt = -dim / 2, max_pt = dim / 2, shape=dim, dtype='float32')
+        dim = numpy.array(numpy.flipud(sz))
+        space = odl.uniform_discr(min_pt = -dim / 2, max_pt = dim / 2, shape=dim, dtype='float32')
 
-        #x = odl.phantom.transmission.shepp_logan(space)
+        x = odl.phantom.transmission.shepp_logan(space)
         
-        #vol = tomobox.volume(numpy.transpose(x.asarray(), axes = [2, 0, 1])[:,::-1,:])
+        vol = numpy.float32(x.asarray())[:,::-1,:]
+        vol = numpy.transpose(vol, [2, 1, 0])
+        return vol 
         
-        vol = tomopy.misc.phantom.shepp3d(sz)
+        #vol = tomobox.volume()
+        
+        #vol = tomopy.misc.phantom.shepp3d(sz)
         #vol = tomobox.volume(tomopy.misc.phantom.shepp3d(sz))
         #vol.meta.history.add_record('SheppLogan phantom is generated using tomopi shepp_logan()', sz)
-        
-        return vol
+        #return vol
     
     @staticmethod             
-    def checkers(sz = 512, frequency = 8):
+    def checkers(sz = [256, 256, 256], frequency = 8):
         
-        vol = numpy.zeros([sz, sz, sz], dtype='bool')
+        vol = numpy.zeros(sz, dtype='bool')
         
-        step = sz // frequency
+        step = sz[1] // frequency
         
         #for ii in numpy.linspace(0, sz, frequency):
         for ii in range(0, frequency):
