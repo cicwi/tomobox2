@@ -55,8 +55,6 @@ class analyse(misc.subclass):
             
         # if dim is not the same as the main dimension     
         else:
-            print('Warning! Summing perpendicular to the main direction of the data array is not implemented for swap arrays!')
-            
             return numpy.sum(self._parent.data.total, dim)
             
     def mean(self, dim = None):
@@ -134,6 +132,8 @@ class analyse(misc.subclass):
 
     def histogram(self, nbin = 256, plot = True, log = False, slice_num = []):
 
+        print('Calculating histogram...')
+        
         mi = self.min()
         ma = self.max()
 
@@ -375,10 +375,13 @@ class preprocess(misc.subclass):
         '''
         print('Applying: ', func)
         
+        misc.progress_bar(0)        
         for jj, block in enumerate(self._parent.data):
             
             # We need an index to update the content of an iterator:
             self._parent.data[jj] = func(block)
+            
+            misc.progress_bar(jj / self._parent.data.block_number)
             
         # add a record to the history:
         self._parent.meta.history.add_record('process.arbitrary_function', func.__name__)
@@ -388,7 +391,9 @@ class preprocess(misc.subclass):
     def threshold(self, threshold = None, binary = True, morethan = True):
         '''
         Apply simple segmentation or discard small values.
-        '''               
+        '''       
+        
+        misc.progress_bar(0)                
         if threshold is None:
             print('Computing half of the 99% percentile to use it as a threshold...')
             
@@ -426,6 +431,7 @@ class preprocess(misc.subclass):
             mask2d: holes are zeros. Mask is the same for all projections.
         '''
         
+        misc.progress_bar(0)        
         for ii, block in enumerate(self._parent.data):    
                     
             # Compute the filler:
@@ -455,6 +461,7 @@ class preprocess(misc.subclass):
 
         tmp = prnt.data.empty_slice()
         
+        misc.progress_bar(0)        
         for ii, block in enumerate(self._parent.data):                 
             
             # Compute:
@@ -466,6 +473,7 @@ class preprocess(misc.subclass):
         
         print('Subtract residual rings.')
         
+        misc.progress_bar(0)        
         for ii, block in enumerate(self._parent.data):
             block -= tmp[:, None, :]
 
@@ -485,22 +493,29 @@ class preprocess(misc.subclass):
         prnt = self._parent
         print('Air intensity will be derived from 10 pixel wide border.')
         
-        for ii, block in enumerate(self._parent.data):
+        # Compute air if needed:
+        if air_val is None:  
             
-            if air_val is None:  
+            air_val = -numpy.inf
+            for ii, block in enumerate(self._parent.data):
                 # Take pixels that belong to the 5 pixel-wide margin.
-                border = numpy.array([block[:10, :], block[-10:, :], block[:, -10:], block[:, :10]])
+                
+                block = numpy.array(block)
+                border = numpy.concatenate((block[:10, :].ravel(), block[-10:, :].ravel(), block[:, -10:].ravel(), block[:, :10].ravel()))
               
                 y, x = numpy.histogram(border, 2**12)
                 x = (x[0:-1] + x[1:]) / 2
         
                 # Subtract maximum argument:    
-                val = x[y.argmax()]
-                        
-                block = block - val
-            else:
-                block = block - air_val
-                
+                air_val = numpy.max([air_val, x[y.argmax()]])
+        
+        print('Subtracting %f' % air_val)  
+        
+        misc.progress_bar(0)  
+        for ii, block in enumerate(self._parent.data):    
+            block = block - air_val
+            block[block < 0] = 0
+            
             self._parent.data[ii] = block
 
             misc.progress_bar((ii+1) / self._parent.data.block_number)
@@ -585,6 +600,8 @@ class preprocess(misc.subclass):
         
         self._parent.message('Applying flat field....')
         
+        misc.progress_bar(0)  
+        
         # Go slice by slice:
         for ii in range(prnt.data.length):     
             
@@ -628,6 +645,7 @@ class preprocess(misc.subclass):
         
         self._parent.message('Applying minus log....')
         
+        misc.progress_bar(0)  
         for ii, block in enumerate(prnt.data):
             
             if (air_intensity != 1.0):
@@ -658,6 +676,7 @@ class preprocess(misc.subclass):
         
         self._parent.message('Supressing salt & papper noise....')
         
+        misc.progress_bar(0)  
         for ii, block in enumerate(prnt.data):
             # Make a smooth version of the data and look for outlayers:
             smooth = ndimage.filters.median_filter(block, kernel)
@@ -680,6 +699,7 @@ class preprocess(misc.subclass):
         
         self._parent.message('More noise! Yeeey!')
         
+        misc.progress_bar(0)  
         for ii, block in enumerate(self._parent.data):
             if mode == 'poisson':
                 block[block < 0] = 0
@@ -703,6 +723,8 @@ class preprocess(misc.subclass):
         prnt = self._parent
         
         print('Applying tilt.')
+        
+        misc.progress_bar(0)  
         for ii in range(prnt.data.length):     
             img = prnt.data.get_slice(ii)
             img = ndimage.interpolation.rotate(img, -tilt, reshape=False)
@@ -791,16 +813,16 @@ class preprocess(misc.subclass):
         plt.figure()
         plt.plot(thickness, synth_counts, 'r-', lw=4, alpha=.8)
         plt.axis('tight')
-        plt.title('Intensity v.s. absorption length.')
+        plt.title('THickness (mm) v.s. absorption length.')
         plt.show()
         
-        print('Callibration intensity range:', [synth_counts[0], synth_counts[-1]])
-        print('Data intensity range:', [self._parent.analyse.min(), self._parent.analyse.max()])
+        print('Callibration attenuation range:', [synth_counts[0], synth_counts[-1]])
+        print('Data attenuation range:', [self._parent.analyse.min(), self._parent.analyse.max()])
 
         print('Applying transfer function.')    
         
         for ii, block in enumerate(self._parent.data):        
-            block = numpy.array(numpy.interp(block, synth_counts, thickness), dtype = 'float32')
+            block = numpy.array(numpy.interp(block, synth_counts, thickness * density), dtype = 'float32')
             
             prnt.data[ii] = block
             

@@ -17,6 +17,7 @@ import xraylib
 import matplotlib.pyplot as plt
 
 import odl    # Is used for phantom creation.
+import reconstruction
 
 class spectra():
     '''
@@ -129,7 +130,7 @@ class spectra():
         return numpy.exp(-(energy - energy_mean)**2 / (2*energy_sigma**2))
         
     @staticmethod
-    def calibrate_energy_spectrum(projections, volume, energy = numpy.linspace(11,100, 90), compound = 'Al', density = 2.7, force_threshold = None):
+    def calibrate_energy_spectrum(projections, volume, energy = numpy.linspace(11,100, 90), compound = 'Al', density = 2.7, force_threshold = None, iterations = 100000):
         '''
         Use the projection stack of a homogeneous object to estimate system's 
         effective spectrum.
@@ -138,65 +139,47 @@ class spectra():
         Please, use conventional geometry. 
         ''' 
         
-        sz = projections.data._data.shape
+        sz = projections.data.shape
         
         trim_proj = projections.copy()
         trim_vol = volume.copy()
         
         # Get 100 central slices:
-        window = 50   
-        trim_proj.data._data = trim_proj.data._data[(sz[0]//2-window):(sz[0]//2+window), :, :]        
-        trim_vol.data._data = trim_vol.data._data[(sz[0]//2-window):(sz[0]//2+window), :, :]        
+        window = 1   
+        trim_proj.data.total = trim_proj.data.total[(sz[0]//2-window):(sz[0]//2+window), :, :]  
+                                                    
+        sz = trim_vol.data.shape
+        trim_vol.data.total = trim_vol.data.total[(sz[0]//2-window):(sz[0]//2+window), :, :]        
         
         trim_vol.display.slice()                                          
                                        
         # Find the shape of the object:                                                    
-        trim_vol.postprocess.threshold(threshold = force_threshold)                         
+        #trim_vol.process.threshold(threshold = force_threshold)    
+        # This way might not work because of mishandling of parents...                      
+        if force_threshold:
+            trim_vol.data.total = numpy.array(trim_vol.data.total > force_threshold, 'float32')
+        else:
+            trim_vol.data.total = numpy.array(trim_vol.data.total > (trim_vol.data.total.max()/2), 'float32')
         
-        trim_vol.display.slice()                                          
+        trim_vol.display.slice()  
         
         synth_proj = trim_proj.copy()
+        synth_proj.data.zeros()
         
         # Forward project the shape:                  
         print('Calculating the attenuation length.')    
-        synth_proj = tomography.project(trim_vol, synth_proj)
+        recon = reconstruction.reconstruct(synth_proj, trim_vol)
+        recon.forwardproject()                                        
                 
         # Projected length and intensity (only central slices):
-        length = synth_proj.data._data[window//2:-window//2,:,:]
-        intensity = trim_proj.data._data[window//2:-window//2,:,:]
-        '''
-        plt.figure()
-        plt.imshow(intensity[:,1,:])
-        plt.colorbar()
-        plt.title('intensity')
-        
-        plt.figure()
-        plt.imshow(intensity[:,100,:])
-        plt.colorbar()
-        plt.title('intensity')
-        
-        plt.figure()
-        plt.imshow(intensity[:,300,:])
-        plt.colorbar()
-        plt.title('intensity')
-        
-        plt.figure()
-        plt.imshow(length[:,1,:])
-        plt.colorbar()
-        plt.title('length')
-        
-        plt.figure()
-        plt.imshow(length[:,100,:])
-        plt.colorbar()
-        plt.title('length')
-        
-        plt.figure()
-        plt.imshow(length[:,300,:])
-        plt.colorbar()
-        plt.title('length')
-        '''
+        length = synth_proj.data.total[window//2:-window//2,:,:]
+        intensity = trim_proj.data.total[window//2:-window//2,:,:]
+
         length = length.ravel()
         intensity = intensity.ravel()
+        
+        print('Maximum reprojected length:', length.max())
+        print('Minimum reprojected length:', length.min())
         
         print('Number of intensity-length pairs:', length.size)
         
@@ -209,7 +192,7 @@ class spectra():
         #bin_n = numpy.int(max_len * 2)
         bin_n = 1000
         
-        bins = numpy.linspace(0, length.max(), bin_n)
+        bins = numpy.linspace(0.2, length.max() * 0.9, bin_n)
         idx  = numpy.digitize(length, bins)
 
         # Rebin length and intensity:        
@@ -242,7 +225,7 @@ class spectra():
         print('Number of length bins:', intensity_0.size)
         print('Number of energy bins:', energy.size)
         
-        nb_iter = 100000
+        nb_iter = iterations
         mu = spectra.linear_attenuation(energy, compound, density, thickness = 0.1)
         exp_matrix = numpy.exp(-numpy.outer(length_0, mu))
 
@@ -335,24 +318,5 @@ class phantom():
         #vol.meta.history.add_record('Checkers phantom is generated.', sz)
         
         return vol
-    
-class tomography():
-    '''
-    Forward projection into the projection data space
-    '''        
-    @staticmethod
-    def project(volume, tomo):
-        '''
-        Forward projects a volume into a tomogram
-        '''
-        # In case the simulated volume is bigger than the detector size:
-        #if ((volume.data.shape[0] - tomo.data.shape[0]) != 0) | ((volume.data.shape[2] - tomo.data.shape[2]) != 0):
-        #    tomo.reconstruct._initialize_astra(force_vol_size = volume.data.shape)
-        tomo.reconstruct._initialize_astra(force_vol_size = volume.data.shape)
-        
-        tomo.data._data = tomo.reconstruct._forwardproject(numpy.ascontiguousarray(volume.data._data))
-        tomo.meta.history.add_record('simulate.tomography.project was used to generate the data')
-        
-        return tomo
-        
+            
    

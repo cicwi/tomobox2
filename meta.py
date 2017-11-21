@@ -820,8 +820,17 @@ class proj_meta(misc.subclass):
         
         #self.geometry = geometry(parent)
         
-    physics = {'voltage': 0, 'current':0, 'exposure': 0}
-    lyrics = {}
+        self.physics = {'voltage': 0, 'current':0, 'exposure': 0}
+        self.lyrics = {}
+
+    def copy(self):
+        """
+        Copy me!
+        """
+        import copy
+        
+        return copy.deepcopy(self)
+        
     
 # **************************************************************
 #           VOL_META class
@@ -835,3 +844,11 @@ class vol_meta(misc.subclass):
         
         self.history = history()  
         self.geometry = vol_geometry(parent)
+        
+    def copy(self):
+        """
+        Copy me!
+        """
+        import copy
+        
+        return copy.deepcopy(self)        

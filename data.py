@@ -23,14 +23,18 @@ class ram_data_pool(object):
     """
     Data located in RAM memory
     """    
-    def __init__(self, dim, shape = None, dtype = 'float32'):
+    def __init__(self, dim, shape = None, dtype = 'float32', pool_dtype = 'float32'):
         
         self._dim = dim
         
         if shape is not None:
-            self._data = numpy.zeros(shape, dtype)
+            self._data = numpy.zeros(shape, pool_dtype)
         else:
             self._data = None
+            
+        # dtype used by the pool internally and externally:
+        self._pool_dtype = pool_dtype
+        self._dtype = dtype
         
     def __del__(self):                    
         self.release()        
@@ -44,15 +48,16 @@ class ram_data_pool(object):
         
     def write(self, key, image):        
         """
-        Write a slice of data.
+        Write a slice of data to pool.
         """
+        image = numpy.array(image, dtype = self._pool_dtype)
         misc._set_dim_data(self._data, self._dim, key, image)
         
     def read(self, key):
         """
-        Read a slice of data.
+        Read a slice of data from pool.
         """
-        return misc._get_dim_data(self._data, self._dim, key)
+        return numpy.array(misc._get_dim_data(self._data, self._dim, key), dtype = self._dtype)
     
     def arbitrary(self, key, dim):
         """
@@ -65,6 +70,10 @@ class ram_data_pool(object):
         """
         All data.
         """
+        # Should we cast type of should we return a pointer to the total data?
+        if self._pool_dtype != self._dtype:
+            print('WARNING! Pool dtype of a ram_data_pool is not the same as it`s dtype. Returning total data in pool_dtype.')
+            
         return self._data
         
     @total.setter    
@@ -72,7 +81,7 @@ class ram_data_pool(object):
         """
         All data.
         """
-        self._data = total
+        self._data = numpy.array(total, dtype = self._pool_dtype)
         
     @property
     def shape(self):    
@@ -80,24 +89,33 @@ class ram_data_pool(object):
         
     @shape.setter
     def shape(self, shape):
-        self._data = numpy.zeros(shape, self.dtype)
+        self._data = numpy.zeros(shape, dtype = self._pool_dtype)
         
     @property
     def dtype(self):
-        if self._data is not None:
-            return numpy.dtype(self._data.dtype) 
-        else:
-            return 'float32' 
+        return self._dtype
         
     @dtype.setter
     def dtype(self, dtype):
-        self._data = numpy.array(self._data, dtype = dtype)
+        self._dtype = dtype
+        
+    @property
+    def pool_dtype(self):
+        if self._data is not None:
+            return numpy.dtype(self._data.dtype) 
+        else:
+            return self._pool_dtype
+        
+    @pool_dtype.setter
+    def pool_dtype(self, pool_dtype):
+        self._data = numpy.array(self._data, dtype = pool_dtype)
+        self._pool_dtype = pool_dtype
     
 class swap_data_pool(object):
     """
-    Data lockated on disk
+    Data lockated on disk.
     """        
-    def __init__(self, swap_path, swap_name, dim, shape = None, dtype = 'float32', disk_dtype = 'float16'):
+    def __init__(self, swap_path, swap_name, dim, shape = None, dtype = 'float32', pool_dtype = 'float16'):
         '''
         
         '''
@@ -112,8 +130,8 @@ class swap_data_pool(object):
         self._shape = shape
         self._dtype = dtype
         
-        # Unfortunately we can't write float16 on disk for some reason...
-        self._disk_dtype = disk_dtype
+        # dtype used by the pool internally.
+        self._pool_dtype = pool_dtype
             
     def __del__(self):        
         
@@ -125,15 +143,23 @@ class swap_data_pool(object):
         Release resources.
         '''
         self._remove_swap()
-        print('Swap removed.')
+        # ToDO check when this is called: Why in stitching?
+        #print('Swap removed.')
                 
     def write(self, key, image):
-        #image = numpy.array(image, self._dtype)
+        '''
+        Write to pool
+        '''
+        image = numpy.array(image, dtype = self._pool_dtype)
         self._write_swap(key, image)
         
     def read(self, key):
+        '''
+        Read from pool
+        '''
         image = self._read_swap(key)
-        #image = numpy.array(image, self._dtype)
+        image = numpy.array(image, self._dtype)
+        
         return image
         
     def arbitrary(self, key, dim):
@@ -158,12 +184,13 @@ class swap_data_pool(object):
         file = os.path.join(self._swap_path, self._swap_name + '_%05u.tiff' % key)
         
         # Write image:
-        io._write_image(file, numpy.array(image, self._disk_dtype))
+        io._write_image(file, numpy.array(image, self._pool_dtype))
         
     def _remove_swap(self):
         """
         Removes all swap files.
         """
+        # TODO: check if this works:
         path_files = os.path.join(self._swap_path, self._swap_name + '*.tiff')
         
         if os.path.exists(path_files):
@@ -207,18 +234,27 @@ class swap_data_pool(object):
     @property
     def shape(self):    
         return numpy.array(self._shape)
+
+    @shape.setter
+    def shape(self, shape):
+        self._shape = shape
         
     @property
     def dtype(self):
         return self._dtype    
 
-    @shape.setter
-    def shape(self, shape):
-        self._shape = shape
-
     @dtype.setter
     def dtype(self, dtype):
         self._dtype = dtype
+        
+    @property
+    def pool_dtype(self):
+        return self._pool_dtype    
+
+    @pool_dtype.setter
+    def pool_dtype(self, dtype):
+        self._pool_dtype = dtype
+    
             
 # **************************************************************
 #           DATA_BLOCKS class
@@ -230,9 +266,10 @@ class data_array(object):
     or swap_data_pool.
     """    
 
-    def __init__(self, array = None, shape = None, dtype = 'float32', block_sizeGB = 1, dim = 1, read_only = False, swap = False, swap_path = '/export/scratch3/kostenko/Fast_Data/swap', swap_file = 'swap'):
+    def __init__(self, array = None, shape = None, dtype = 'float32', block_sizeGB = 1, dim = 1, read_only = False, 
+                 swap = False, swap_path = '/export/scratch3/kostenko/Fast_Data/swap', swap_file = 'swap', pool_dtype = 'float32'):
         
-        # Read only:
+        # If read only, don't update data pool - only the buffer:
         self._read_only = read_only
         
         # Block buffer and it's current key:
@@ -240,7 +277,7 @@ class data_array(object):
         self._block_key = -1
         self._block_updated = False
         
-        # Additional buffer for the slice image:
+        # Additional buffer for a slice:
         self._slice = []
         self._slice_key = -1
         self._slice_updated = False
@@ -259,9 +296,9 @@ class data_array(object):
     
         # initialize the data pool:
         if swap:
-            self._data_pool = swap_data_pool(swap_path, swap_file, dim)
+            self._data_pool = swap_data_pool(swap_path, swap_file, dim, pool_dtype = pool_dtype)
         else:
-            self._data_pool = ram_data_pool(dim)
+            self._data_pool = ram_data_pool(dim, pool_dtype = pool_dtype)
                         
         self._block_sizeGB = block_sizeGB
                         
@@ -294,7 +331,7 @@ class data_array(object):
                             
             gc.collect()
             
-            print('data_array deleted!')
+            #print('Memory freed!')
             
     def add(self, x):
         """
@@ -461,7 +498,7 @@ class data_array(object):
         """
         return isinstance(self._data_pool, swap_data_pool)
         
-    def switch_to_ram(self, keep_data = True):
+    def switch_to_ram(self, keep_data = True, dtype = 'float32', pool_dtype = 'float32'):
         """
         Switches data to a RAM based array.
         """
@@ -475,12 +512,16 @@ class data_array(object):
         if keep_data:            
             # First copy the data:
             shape = self._data_pool.shape
-            new_pool = ram_data_pool(dim, shape)
+            dtype
+            pool_dtype
+            new_pool = ram_data_pool(dim, shape, dtype = dtype, pool_dtype = pool_dtype)
+            
             new_pool.total = self._data_pool.total
             
         else:
-            new_pool = ram_data_pool(dim)
+            new_pool = ram_data_pool(dim, dtype = dtype, pool_dtype = pool_dtype)
                         
+        self._data_pool.release()    
         self._data_pool = new_pool          
         
         # Clean up!
@@ -488,7 +529,7 @@ class data_array(object):
 
         print('Switched data pool to RAM')
     
-    def switch_to_swap(self, keep_data = False, swap_path = '/export/scratch3/kostenko/Fast_Data/swap', swap_name = 'swap'):
+    def switch_to_swap(self, keep_data = False, swap_path = '/export/scratch3/kostenko/Fast_Data/swap', swap_name = 'swap', dtype = 'float32', pool_dtype = 'float32'):
         """
         Switches data to an SSD based array.
         """
@@ -497,7 +538,7 @@ class data_array(object):
         # Swap path can be different
         if keep_data:
             # First copy the data:
-            new_pool = swap_data_pool(swap_path, swap_name, self._data_pool._dim, self._data_pool.shape, self._data_pool.dtype)
+            new_pool = swap_data_pool(swap_path, swap_name, self._data_pool._dim, self._data_pool.shape, self._data_pool.dtype, pool_dtype = self._data_pool._pool_dtype)
             new_pool.total = self._data_pool.total
             
             self._data_pool.release()
@@ -789,7 +830,7 @@ class data_array(object):
         if isinstance(self._data_pool, ram_data_pool):            
             
             # Use total is the array is in the RAM memory:
-            self.total = numpy.zeros(shape, dtype = self.dtype)
+            self.total = numpy.zeros(shape, dtype = self.pool_dtype)
             
         else:
             # Use blocks if the data is on disk:
@@ -814,7 +855,7 @@ class data_array(object):
         if isinstance(self._data_pool, ram_data_pool):            
             
             # Use total is the array is in the RAM memory:
-            self.total = numpy.ones(shape, dtype = self.dtype)
+            self.total = numpy.ones(shape, dtype = self.pool_dtype)
             
         else:
             # Use blocks if the data is on disk:
@@ -854,6 +895,13 @@ class data_array(object):
         Main dimension of the data array
         """
         self._data_pool._dim = dim
+        
+    @property
+    def pool_dtype(self):
+        """
+        Data type of the array.
+        """
+        return numpy.dtype(self._data_pool.pool_dtype)
         
     @property
     def dtype(self):
@@ -1022,7 +1070,7 @@ class data_array(object):
         """
         Size of the array in Gigabytes
         """
-        return self.size / 1073741824 * self.dtype.itemsize    
+        return self.size / 1073741824 * self.pool_dtype.itemsize    
       
 # **************************************************************
 #           IO class
@@ -1136,11 +1184,9 @@ class io(misc.subclass):
               
             data[ii, :, :] = a
     
-            misc.progress_bar((ii+1) / numpy.shape(files)[0] * index_step)
-            #print("\r Progress {:2.1%}".format(), end=" ")        
-            
+            misc.progress_bar((ii+1) / (numpy.shape(files)[0] // index_step))
     
-        print(ii, 'files were loaded.')
+        print('%u files were loaded.' % ii)
     
         return data
     
@@ -1193,8 +1239,8 @@ class io(misc.subclass):
 
             print('Reading a stack of images')
             print('Seed file name is:', filename)
-            if index_step > 0:
-                print('Reading every %d-nd(rd) image.' % index_step)
+            if index_step > 1:
+                print('Reading every %d images.' % index_step)
             #srt = self.settings['sort_by_date']AMT24-25-SU1/
 
             data = self._read_image_stack(os.path.join(path_folder,filename), index_step)

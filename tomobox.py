@@ -33,15 +33,15 @@ from reconstruction import reconstruct
 # **************************************************************
 #           TOMOGRAPHIC_DATA class
 # **************************************************************
-class tomographic_data(object):
+class _tomographic_data(object):
     """
     This is a data container class that will be inherited by volume and projections classes.
     """
     
-    def __init__(self, block_sizeGB = 1, swap = False):
+    def __init__(self, block_sizeGB = 1, swap = False, pool_dtype = 'float32'):
         
         # Default RAM based data array:
-        self.data = data_array(dtype = 'float32', block_sizeGB = block_sizeGB, swap = swap)        
+        self.data = data_array(dtype = 'float32', block_sizeGB = block_sizeGB, swap = swap, pool_dtype = pool_dtype)        
         
         # Common classes for the cvolume and for the projections:
         self.io = io(self)
@@ -66,42 +66,61 @@ class tomographic_data(object):
 # **************************************************************
 #           VOLUME class
 # **************************************************************
-class volume(tomographic_data):
+class volume(_tomographic_data):
     """
     Container for the reconstructed volume data.
     """
       
-    def __init__(self, array = None, shape = None, img_pixel = [1,1,1], block_sizeGB = 1, swap = False):
+    def __init__(self, projections = None, array = None, shape = None, img_pixel = None, block_sizeGB = 1, swap = False, pool_dtype = 'float32'):
         """
         Initialize.
         """
         # Initializa parent class:
-        tomographic_data.__init__(self, block_sizeGB, swap)
+        _tomographic_data.__init__(self, block_sizeGB, swap, pool_dtype = pool_dtype)
         
-        if array is not None:
-            self.data.total = array
-            
-        elif shape is not None:
-            self.data.total = numpy.zeros(shape, dtype = numpy.float32)
+        # Set the correct main axis for the data object:
+        self.data.dim = 0
         
-        #else:
-        #    raise ValueError('Come on, man! You need to specify at least the array size.')
-
         # Volume-specific stuff: 
         self.meta = vol_meta(self)
         self.process = postprocess(self)
-            
-        # Set the correct main axis for the data object:
-        self.data.dim = 0
-        self.meta.geometry.img_pixel = img_pixel    
+        
+        # If projections are defined - use their properties to initialize the volume:
+        if projections is not None:
+            sz = projections.data.shape[0]
+            sx = projections.data.shape[2]
+
+            img_pixel = projections.meta.geometry.img_pixel
+            shape = [sz, sx, sx]
+        
+        if img_pixel is not None:
+            self.meta.geometry.img_pixel = img_pixel    
+        
+        if array is not None:
+            self.data.total = array            
+        elif shape is not None:
+            self.data.total = numpy.zeros(shape, dtype = numpy.float32)
+        
                  
-    def initialize_volume(self, size, img_pixel):
+    def initialize(self, shape, img_pixel):
         '''
         Initialize a dataset of a given size
         '''        
-        
-        self.data.total = numpy.zeros(size, dtype = numpy.float32)
+        self.data.total = numpy.zeros(shape, dtype = self.data.dtype)
         self.meta.geometry.img_pixel = img_pixel
+        
+    def initialize_from_projections(self, projections):
+        '''
+        Initialize volume using parameters of the projection data.
+        '''
+        sz = projections.data.shape[0]
+        sx = projections.data.shape[2]
+
+        pix = projections.meta.geometry.img_pixel
+        
+        self.initialize(shape = [sz, sx, sx], img_pixel = pix)
+        
+        print('Default volume is generated!')
         
     def copy(self, swap = False):
         
@@ -118,15 +137,15 @@ class volume(tomographic_data):
 #           PROJECTIONS class
 # **************************************************************
 
-class projections(tomographic_data):
+class projections(_tomographic_data):
     """
     Container for the projection data.
     """
     
-    def __init__(self, block_sizeGB = 1, swap = False):
+    def __init__(self, block_sizeGB = 1, swap = False, pool_dtype = 'float32'):
         
         # Initializa parent class:
-        tomographic_data.__init__(self, block_sizeGB, swap)
+        _tomographic_data.__init__(self, block_sizeGB, swap, pool_dtype)
            
         # Projections-specific fields:    
         self._ref  = []
@@ -137,6 +156,18 @@ class projections(tomographic_data):
         
         # Sinograms should have dim = 1 as a main axis:
         self.data.dim = 1
+        
+    def copy(self):
+        import copy
+        
+        #block_sizeGB = self.data._block_sizeGB
+
+        #prj = projections(block_sizeGB = block_sizeGB, swap = swap)
+        #prj.meta = prj.meta.copy()
+        #prj.data.total = self.data.total        
+        prj = copy.deepcopy(self)
+                
+        return prj
                 
     def message(self, msg):
         '''
